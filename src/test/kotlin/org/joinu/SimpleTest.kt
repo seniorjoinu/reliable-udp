@@ -2,25 +2,12 @@ package org.joinu
 
 import kotlinx.coroutines.*
 import org.junit.jupiter.api.Test
-import org.nustaq.serialization.FSTConfiguration
-import java.io.Serializable
 import java.lang.RuntimeException
-import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.nio.charset.StandardCharsets
+import java.util.*
 
-
-object SerializationUtils {
-    val mapper = FSTConfiguration.createDefaultConfiguration()
-
-    init {
-        mapper.registerClass(NetworkPackage.NetworkPackageInner::class.java)
-    }
-
-    fun toBytes(obj: Any): ByteArray = mapper.asByteArray(obj)
-    fun <T : Any> toAny(bytes: ByteArray, clazz: Class<T>): T = clazz.cast(mapper.asObject(bytes))
-    inline fun <reified T : Any> toAny(bytes: ByteArray): T = SerializationUtils.toAny(bytes, T::class.java)
-}
 
 class SimpleTest {
     @Test
@@ -42,120 +29,85 @@ class SimpleTest {
         val net2Addr = InetSocketAddress("localhost", 1338)
 
         runBlocking {
-            val job1 = RUDP.listen(net1Addr, scope = this) { pack ->
-                println("Net1 received $pack")
+            val socket1 = DatagramSocket(net1Addr)
+            launch { UDP.listen(socket1) }
+            println("Listening on port ${net1Addr.port}")
+
+            val socket2 = DatagramSocket(net2Addr)
+            launch { UDP.listen(socket2) }
+            println("Listening on port ${net2Addr.port}")
+
+            UDP.onMessage(net1Addr) { bytes, from ->
+                println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                socket1.close()
             }
 
-            val job2 = RUDP.listen(net2Addr, scope = this) { pack ->
-                println("Net2 received $pack")
+            UDP.onMessage(net2Addr) { bytes, from ->
+                println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                socket2.close()
             }
-
-            RUDP.addHandler(net1Addr) { job1.cancel() }
-            RUDP.addHandler(net2Addr) { job2.cancel() }
 
             val net1Content = ByteArray(10) { it.toByte() }
             val net2Content = ByteArray(10) { (10 - it).toByte() }
 
-            RUDP.send(net1Content, net2Addr, net1Addr.port, scope = this)
-            RUDP.send(net2Content, net1Addr, net2Addr.port, scope = this)
+            UDP.send(net1Content, net2Addr)
+            UDP.send(net2Content, net1Addr)
+        }
+
+        println("end of test")
+    }
+
+    private fun udpStress(packetCount: Int, packetSizeBytes: Int, timeoutMs: Long) {
+        val net1Addr = InetSocketAddress("localhost", 1337)
+
+        val lostCount = runBlocking {
+            var count = packetCount
+            val socket1 = DatagramSocket(net1Addr)
+
+            val countTask = async(Dispatchers.IO) {
+                delay(timeoutMs)
+                socket1.close()
+                count
+            }
+
+            launch(Dispatchers.IO) { UDP.listen(socket1, packetSizeBytes + 1) { isActive } }
+
+            UDP.onMessage(net1Addr) { bytes, from ->
+                count--
+
+                if (count == 0)
+                    socket1.close()
+            }
+
+            for (i in 0..packetCount) {
+                val net2Content = ByteArray(packetSizeBytes)
+                Random().nextBytes(net2Content)
+                UDP.send(net2Content, net1Addr, packetSizeBytes + 1)
+            }
+
+            return@runBlocking countTask.await()
+        }
+
+        println("$packetCount packets $packetSizeBytes bytes each timeout $timeoutMs ms: lost $lostCount (${lostCount.toDouble() / packetCount * 100}%)")
+    }
+
+    @Test
+    fun `udp packet loss benchmark`() {
+        //udpStress(1000, 10, 2000)
+        //udpStress(1000, 50, 2000)
+        //udpStress(1000, 100, 2000)
+        //udpStress(1000, 500, 2000)
+        //udpStress(1000, 1000, 2000)
+        //udpStress(1000, 5000, 2000)
+        udpStress(1000, 500000, 2000)
+    }
+
+    @Test
+    fun asdtest() {
+        runBlocking {
+            launch(Dispatchers.IO) { Thread.sleep(1000) }
+            throw RuntimeException("kek")
         }
     }
 }
-
-data class NetworkPackage(val data: ByteArray, val from: InetSocketAddress) {
-
-    data class NetworkPackageInner(val data: ByteArray, val fromPort: Int) : Serializable {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-
-            other as NetworkPackageInner
-
-            if (!data.contentEquals(other.data)) return false
-            if (fromPort != other.fromPort) return false
-
-            return true
-        }
-
-        override fun hashCode(): Int {
-            var result = data.contentHashCode()
-            result = 31 * result + fromPort
-            return result
-        }
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as NetworkPackage
-
-        if (!data.contentEquals(other.data)) return false
-        if (from != other.from) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = data.contentHashCode()
-        result = 31 * result + from.hashCode()
-        return result
-    }
-}
-
-typealias NetworkPackageHandler = suspend (pack: NetworkPackage) -> Unit
-
-object RUDP {
-    suspend fun send(
-        data: ByteArray,
-        to: InetSocketAddress,
-        listeningOnPort: Int,
-        maxChunkSizeBytes: Int = 500,
-        scope: CoroutineScope = GlobalScope
-    ) = scope.launch {
-        val pack = NetworkPackage.NetworkPackageInner(data, listeningOnPort)
-        val serializedPack = SerializationUtils.toBytes(pack)
-
-        if (serializedPack.size > maxChunkSizeBytes)
-            throw IllegalArgumentException("Size of data should be less than $maxChunkSizeBytes bytes")
-
-        val socket = DatagramSocket()
-        val packet = DatagramPacket(serializedPack, serializedPack.size, to)
-
-        withContext(Dispatchers.IO) { socket.send(packet) }
-    }
-
-    suspend fun listen(
-        on: InetSocketAddress,
-        maxChunkSizeBytes: Int = 500,
-        scope: CoroutineScope = GlobalScope,
-        handler: NetworkPackageHandler? = null
-    ) = scope.launch {
-        val socket = DatagramSocket(on)
-
-        val buffer = ByteArray(maxChunkSizeBytes)
-
-        println("Listening on: $on")
-
-        while (true) {
-            val packet = DatagramPacket(buffer, buffer.size)
-            withContext(Dispatchers.IO) { socket.receive(packet) }
-
-            val netPackageInner = SerializationUtils.toAny<NetworkPackage.NetworkPackageInner>(packet.data)
-            val netPackage =
-                NetworkPackage(netPackageInner.data, InetSocketAddress(packet.address, netPackageInner.fromPort))
-
-            if (handler != null) handler(netPackage)
-            if (onMessageHandlers.containsKey(on)) onMessageHandlers[on]!!.forEach { it(netPackage) }
-        }
-    }
-
-    private val onMessageHandlers: MutableMap<InetSocketAddress, MutableList<NetworkPackageHandler>> = mutableMapOf()
-
-    fun addHandler(whenListenOn: InetSocketAddress, handler: NetworkPackageHandler) {
-        if (!onMessageHandlers.containsKey(whenListenOn))
-            onMessageHandlers[whenListenOn] = mutableListOf()
-
-        onMessageHandlers[whenListenOn]!!.add(handler)
-    }
-}
+// TODO: packet lost benchmark
