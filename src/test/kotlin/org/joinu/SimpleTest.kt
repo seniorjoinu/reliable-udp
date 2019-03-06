@@ -2,10 +2,8 @@ package org.joinu
 
 import kotlinx.coroutines.*
 import org.junit.jupiter.api.Test
-import java.lang.RuntimeException
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
-import java.nio.charset.StandardCharsets
 import java.util.*
 
 
@@ -52,6 +50,47 @@ class SimpleTest {
 
             UDP.send(net1Content, net2Addr)
             UDP.send(net2Content, net1Addr)
+        }
+
+        println("end of test")
+    }
+
+    @Test
+    fun `send and receive works fine with`() {
+        runBlocking {
+            val net1Addr = InetSocketAddress("localhost", 1337)
+            val net2Addr = InetSocketAddress("localhost", 1338)
+
+            val udp1 = NetworkProvider.provide(net1Addr)
+            val udp2 = NetworkProvider.provide(net2Addr)
+
+            var active1 = true
+            var active2 = true
+
+            /*launch(Dispatchers.IO) { udp1.listen { active1 } }
+            launch(Dispatchers.IO) { udp2.listen { active2 } }*/
+
+            udp1.listenAsync { active1 }
+            udp2.listenAsync { active2 }
+
+            udp1.addOnMessageHandler { bytes, from ->
+                println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                active1 = false
+            }
+
+            udp2.addOnMessageHandler { bytes, from ->
+                println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                active2 = false
+            }
+
+            val net1Content = ByteArray(10) { it.toByte() }
+            val net2Content = ByteArray(10) { (10 - it).toByte() }
+
+            /*udp1.send(net1Content, net2Addr)
+            udp2.send(net2Content, net1Addr)*/
+
+            udp1.sendAsync(net1Content, net2Addr)
+            udp2.sendAsync(net2Content, net1Addr)
         }
 
         println("end of test")
