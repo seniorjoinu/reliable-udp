@@ -2,7 +2,7 @@ package org.joinu
 
 import kotlinx.coroutines.*
 import org.junit.jupiter.api.Test
-import java.net.DatagramSocket
+import org.junit.jupiter.api.assertThrows
 import java.net.InetSocketAddress
 import java.util.*
 
@@ -10,143 +10,98 @@ import java.util.*
 class SimpleTest {
     @Test
     fun `serialization works fine`() {
-        val pack = NetworkPackage.NetworkPackageInner(ByteArray(10) { it.toByte() }, 123)
+        val pack = "Im going to be serialized"
 
         val serialized = SerializationUtils.toBytes(pack)
-        val deserialized = SerializationUtils.toAny<NetworkPackage>(serialized)
+        val deserialized = SerializationUtils.toAny<String>(serialized)
 
         println("Serialized: ${serialized.joinToString { String.format("%02X", it) }}")
         println("Deserialized: $deserialized")
 
-        assert(deserialized.data.contentEquals(pack.data))
+        assert(deserialized == pack)
     }
 
     @Test
-    fun `send and receive works fine`() {
-        val net1Addr = InetSocketAddress("localhost", 1337)
-        val net2Addr = InetSocketAddress("localhost", 1338)
-
-        runBlocking {
-            val socket1 = DatagramSocket(net1Addr)
-            launch { UDP.listen(socket1) }
-            println("Listening on port ${net1Addr.port}")
-
-            val socket2 = DatagramSocket(net2Addr)
-            launch { UDP.listen(socket2) }
-            println("Listening on port ${net2Addr.port}")
-
-            UDP.onMessage(net1Addr) { bytes, from ->
-                println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                socket1.close()
-            }
-
-            UDP.onMessage(net2Addr) { bytes, from ->
-                println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                socket2.close()
-            }
-
-            val net1Content = ByteArray(10) { it.toByte() }
-            val net2Content = ByteArray(10) { (10 - it).toByte() }
-
-            UDP.send(net1Content, net2Addr)
-            UDP.send(net2Content, net1Addr)
-        }
-
-        println("end of test")
-    }
-
-    @Test
-    fun `send and receive works fine with`() {
+    fun `send and receive work fine`() {
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
 
-            val udp1 = NetworkProvider.provide(net1Addr)
-            val udp2 = NetworkProvider.provide(net2Addr)
+            val udp1 = NonBlockingUDPSocket()
+            udp1.bind(net1Addr)
 
-            var active1 = true
-            var active2 = true
+            val udp2 = NonBlockingUDPSocket()
+            udp2.bind(net2Addr)
 
-            /*launch(Dispatchers.IO) { udp1.listen { active1 } }
-            launch(Dispatchers.IO) { udp2.listen { active2 } }*/
-
-            udp1.listenAsync { active1 }
-            udp2.listenAsync { active2 }
+            launch(Dispatchers.IO) { udp1.listen() }
+            launch(Dispatchers.IO) { udp2.listen() }
 
             udp1.addOnMessageHandler { bytes, from ->
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                active1 = false
+                udp1.close()
             }
 
             udp2.addOnMessageHandler { bytes, from ->
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                active2 = false
+                udp2.close()
             }
 
             val net1Content = ByteArray(10) { it.toByte() }
             val net2Content = ByteArray(10) { (10 - it).toByte() }
 
-            /*udp1.send(net1Content, net2Addr)
-            udp2.send(net2Content, net1Addr)*/
-
-            udp1.sendAsync(net1Content, net2Addr)
-            udp2.sendAsync(net2Content, net1Addr)
+            udp1.send(net1Content, net2Addr)
+            udp2.send(net2Content, net1Addr)
         }
 
         println("end of test")
     }
 
+    var resultCount = 0
+
+    @Throws(IllegalArgumentException::class)
     private fun udpStress(packetCount: Int, packetSizeBytes: Int, timeoutMs: Long) {
-        val net1Addr = InetSocketAddress("localhost", 1337)
+        runBlocking {
+            withTimeoutOrNull(timeoutMs) {
+                resultCount = packetCount
+                val net1Addr = InetSocketAddress("localhost", 1337)
+                val udp1 = NonBlockingUDPSocket(packetSizeBytes + 1)
+                udp1.bind(net1Addr)
 
-        val lostCount = runBlocking {
-            var count = packetCount
-            val socket1 = DatagramSocket(net1Addr)
+                launch(Dispatchers.IO) {
+                    delay(timeoutMs)
+                    udp1.close()
+                }
+                launch(Dispatchers.IO) { udp1.listen() }
 
-            val countTask = async(Dispatchers.IO) {
-                delay(timeoutMs)
-                socket1.close()
-                count
+                udp1.addOnMessageHandler { bytes, from ->
+                    resultCount--
+
+                    if (resultCount == 0)
+                        udp1.close()
+                }
+
+                for (i in 1..packetCount) {
+                    val net2Content = ByteArray(packetSizeBytes)
+                    Random().nextBytes(net2Content)
+
+                    udp1.send(net2Content, net1Addr)
+                }
             }
-
-            launch(Dispatchers.IO) { UDP.listen(socket1, packetSizeBytes + 1) { isActive } }
-
-            UDP.onMessage(net1Addr) { bytes, from ->
-                count--
-
-                if (count == 0)
-                    socket1.close()
-            }
-
-            for (i in 0..packetCount) {
-                val net2Content = ByteArray(packetSizeBytes)
-                Random().nextBytes(net2Content)
-                UDP.send(net2Content, net1Addr, packetSizeBytes + 1)
-            }
-
-            return@runBlocking countTask.await()
         }
 
-        println("$packetCount packets $packetSizeBytes bytes each timeout $timeoutMs ms: lost $lostCount (${lostCount.toDouble() / packetCount * 100}%)")
+        println("$packetCount packets $packetSizeBytes bytes each timeout $timeoutMs ms: lost $resultCount (${resultCount.toDouble() / packetCount * 100}%)")
     }
 
     @Test
     fun `udp packet loss benchmark`() {
-        //udpStress(1000, 10, 2000)
-        //udpStress(1000, 50, 2000)
-        //udpStress(1000, 100, 2000)
-        //udpStress(1000, 500, 2000)
-        //udpStress(1000, 1000, 2000)
-        //udpStress(1000, 5000, 2000)
-        udpStress(1000, 500000, 2000)
-    }
-
-    @Test
-    fun asdtest() {
-        runBlocking {
-            launch(Dispatchers.IO) { Thread.sleep(1000) }
-            throw RuntimeException("kek")
+        udpStress(1000, 10, 2000)
+        udpStress(1000, 50, 2000)
+        udpStress(1000, 100, 2000)
+        udpStress(1000, 500, 2000)
+        udpStress(1000, 1000, 2000)
+        udpStress(1000, 5000, 2000)
+        assertThrows<java.lang.IllegalArgumentException> {
+            udpStress(1000, 500000, 2000)
         }
     }
 }
-// TODO: packet lost benchmark
