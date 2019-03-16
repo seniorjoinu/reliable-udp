@@ -1,4 +1,4 @@
-package org.joinu
+package net.joinu.nioudp
 
 import java.net.InetSocketAddress
 

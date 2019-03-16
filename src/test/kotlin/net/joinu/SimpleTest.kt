@@ -1,6 +1,8 @@
-package org.joinu
+package net.joinu
 
 import kotlinx.coroutines.*
+import net.joinu.nioudp.NonBlockingUDPSocket
+import net.joinu.utils.SerializationUtils
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.net.InetSocketAddress
@@ -26,6 +28,8 @@ class SimpleTest {
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
+            val net1Content = ByteArray(10) { it.toByte() }
+            val net2Content = ByteArray(10) { (10 - it).toByte() }
 
             val udp1 = NonBlockingUDPSocket()
             udp1.bind(net1Addr)
@@ -38,16 +42,19 @@ class SimpleTest {
 
             udp1.addOnMessageHandler { bytes, from ->
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
+
                 udp1.close()
             }
 
             udp2.addOnMessageHandler { bytes, from ->
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
+
                 udp2.close()
             }
 
-            val net1Content = ByteArray(10) { it.toByte() }
-            val net2Content = ByteArray(10) { (10 - it).toByte() }
+            delay(100)
 
             udp1.send(net1Content, net2Addr)
             udp2.send(net2Content, net1Addr)

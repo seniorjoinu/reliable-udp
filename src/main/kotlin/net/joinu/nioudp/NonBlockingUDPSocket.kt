@@ -1,4 +1,4 @@
-package org.joinu
+package net.joinu.nioudp
 
 import java.io.Closeable
 import java.net.InetSocketAddress
@@ -6,9 +6,19 @@ import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 
 
-open class NonBlockingUDPSocket(
-    val chunkSizeBytes: Int = 508
-) : Closeable {
+interface NioSocket : Closeable {
+    fun bind(address: InetSocketAddress)
+    fun listen()
+    fun send(data: ByteArray, to: InetSocketAddress)
+    fun addOnMessageHandler(handler: NetworkMessageHandler)
+    fun getSocketState(): SocketState
+}
+
+const val DATA_SIZE_BYTES = 4
+
+open class NonBlockingUDPSocket(val chunkSizeBytes: Int = 504) : NioSocket {
+
+    val actualChunkSize = chunkSizeBytes + DATA_SIZE_BYTES
 
     init {
         require(chunkSizeBytes <= MAX_CHUNK_SIZE_BYTES) {
@@ -21,13 +31,15 @@ open class NonBlockingUDPSocket(
 
     protected var state = SocketState.UNBOUND
 
-    fun getSocketState() = state
+    override fun getSocketState() = state
     fun isBound(): Boolean = state == SocketState.BOUND
     fun isClosed(): Boolean = state == SocketState.CLOSED
 
-    fun addOnMessageHandler(handler: NetworkMessageHandler) = onMessageHandlers.add(handler)
+    override fun addOnMessageHandler(handler: NetworkMessageHandler) {
+        onMessageHandlers.add(handler)
+    }
 
-    fun bind(address: InetSocketAddress) {
+    override fun bind(address: InetSocketAddress) {
         channel = DatagramChannel.open()
         channel.configureBlocking(false)
         channel.bind(address)
@@ -51,11 +63,11 @@ open class NonBlockingUDPSocket(
             throw IllegalStateException("NonBlockingUDPSocket is already closed.")
     }
 
-    fun listen() {
+    override fun listen() {
         throwIfNotBound()
         throwIfClosed()
 
-        val buf = ByteBuffer.allocateDirect(chunkSizeBytes)
+        val buf = ByteBuffer.allocateDirect(actualChunkSize)
 
         while (!isClosed()) {
             val remoteAddress = channel.receive(buf)
@@ -63,7 +75,8 @@ open class NonBlockingUDPSocket(
             if (buf.position() == 0) continue
 
             buf.flip()
-            val data = ByteArray(buf.limit())
+            val size = buf.int
+            val data = ByteArray(size)
             buf.get(data)
             buf.clear()
 
@@ -73,13 +86,17 @@ open class NonBlockingUDPSocket(
         }
     }
 
-    fun send(data: ByteArray, to: InetSocketAddress) {
+    override fun send(data: ByteArray, to: InetSocketAddress) {
         throwIfNotBound()
         throwIfClosed()
 
         val paddedData = applyPadding(data)
+        val wrappedData = ByteBuffer.allocateDirect(actualChunkSize)
+            .putInt(data.size)
+            .put(paddedData)
+        wrappedData.position(0)
 
-        channel.send(ByteBuffer.wrap(paddedData), to)
+        channel.send(wrappedData, to)
     }
 
     private fun applyPadding(to: ByteArray): ByteArray {
