@@ -14,10 +14,9 @@ interface NioSocket : Closeable {
     fun getSocketState(): SocketState
 }
 
-
 open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
 
-    val actualChunkSize = chunkSizeBytes + DATA_SIZE_BYTES
+    val actualChunkSizeBytes = chunkSizeBytes + DATA_SIZE_BYTES
 
     init {
         require(chunkSizeBytes <= MAX_CHUNK_SIZE_BYTES) {
@@ -66,7 +65,7 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         throwIfNotBound()
         throwIfClosed()
 
-        val buf = ByteBuffer.allocateDirect(actualChunkSize)
+        val buf = ByteBuffer.allocateDirect(actualChunkSizeBytes)
 
         while (!isClosed()) {
             val remoteAddress = channel.receive(buf)
@@ -89,21 +88,13 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         throwIfNotBound()
         throwIfClosed()
 
-        val paddedData = applyPadding(data)
-        val wrappedData = ByteBuffer.allocateDirect(actualChunkSize)
+        require(data.size <= chunkSizeBytes) { "Size of data should be LEQ than $chunkSizeBytes bytes" }
+
+        val wrappedData = ByteBuffer.allocateDirect(actualChunkSizeBytes)
             .putInt(data.size)
-            .put(paddedData)
+            .put(data)
         wrappedData.position(0)
 
         channel.send(wrappedData, to)
-    }
-
-    private fun applyPadding(to: ByteArray): ByteArray {
-        require(to.size <= chunkSizeBytes) { "Size of data should be LEQ than $chunkSizeBytes bytes" }
-
-        return if (to.size < chunkSizeBytes)
-            ByteArray(chunkSizeBytes) { if (it < to.size) to[it] else 0 }
-        else
-            to
     }
 }
