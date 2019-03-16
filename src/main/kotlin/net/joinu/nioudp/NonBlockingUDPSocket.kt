@@ -14,9 +14,8 @@ interface NioSocket : Closeable {
     fun getSocketState(): SocketState
 }
 
-const val DATA_SIZE_BYTES = 4
 
-open class NonBlockingUDPSocket(val chunkSizeBytes: Int = 504) : NioSocket {
+open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
 
     val actualChunkSize = chunkSizeBytes + DATA_SIZE_BYTES
 
