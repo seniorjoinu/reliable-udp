@@ -9,7 +9,7 @@ import java.net.InetSocketAddress
 import java.util.*
 
 
-class SimpleTest {
+class NonBlockingUdpTest {
     @Test
     fun `serialization works fine`() {
         val pack = "Im going to be serialized"

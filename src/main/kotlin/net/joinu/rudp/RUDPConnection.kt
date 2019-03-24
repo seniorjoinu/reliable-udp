@@ -28,12 +28,12 @@ data class RUDPConnection(var congestionIndex: CongestionIndex, val address: Ine
      * Retransmission timeout varies from latency to latency*10
      */
     fun getRetransmissionTimeoutMs(): Int {
-        val minimum = congestionIndex.latencyMs
-        val maximum = congestionIndex.latencyMs * 10
+        val minimum = congestionIndex.averageLatencyMs
+        val maximum = congestionIndex.averageLatencyMs * 10
 
         val volume = maximum - minimum
         val difference = congestionIndex.getValue() * volume
 
-        return minimum + difference.roundToInt()
+        return (minimum + difference).roundToInt()
     }
 }
