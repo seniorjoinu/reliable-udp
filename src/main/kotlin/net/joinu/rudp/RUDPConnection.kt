@@ -6,7 +6,7 @@ import java.net.InetSocketAddress
 import kotlin.math.roundToInt
 
 
-data class RUDPConnection(var congestionIndex: CongestionIndex, val address: InetSocketAddress) {
+data class RUDPConnection(val address: InetSocketAddress, val congestionIndex: CongestionIndex = CongestionIndex()) {
     /**
      * Window size in bytes - amount of bytes which can be transmitted without acknowledgement.
      * The worse connection is - the less window size is.
@@ -14,9 +14,9 @@ data class RUDPConnection(var congestionIndex: CongestionIndex, val address: Ine
      * Windows size varies from [RECOMMENDED_CHUNK_SIZE_BYTES] to [RECOMMENDED_CHUNK_SIZE_BYTES]*10
      */
     fun getWindowSizeBytes(): Int {
-        val chunkCount = congestionIndex.getValue() * 10
+        val chunkCount = (1 - congestionIndex.getValue()) * 9
 
-        return RECOMMENDED_CHUNK_SIZE_BYTES * chunkCount.roundToInt()
+        return RECOMMENDED_CHUNK_SIZE_BYTES + RECOMMENDED_CHUNK_SIZE_BYTES * chunkCount.roundToInt()
     }
 
     /**
