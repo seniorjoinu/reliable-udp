@@ -18,50 +18,34 @@ import java.util.concurrent.ConcurrentHashMap
 class RUDPSocket : NioSocket {
     companion object {
         init {
-            init()
-        }
-
-        @JvmStatic()
-        fun init() {
             //SerializationUtils.registerClass()
         }
-
-        // TODO: locally it will clash - it's bad for tests, but nice for production
-        @JvmStatic()
-        val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
-        @JvmStatic()
-        val acks = ConcurrentHashMap<Long, MutableList<Int>>()
-        @JvmStatic()
-        val segments = ConcurrentHashMap<Long, MutableList<ByteArray>>()
     }
+
+    val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
 
     override fun listen() {
         // wait for new message
         // if there is no connection with this address - create
-        // if it is ACK add it to ACK collection
-        // if it is data add it to data collection
-        // when all data pieces received:
-        //  remove metadata
+        // if it is ACK - cancel send coroutine
+        // if it is a repair block - accumulate it
+        // when all needed repair blocks received:
+        //  send ACK
         //  unfec
-        //  merge
-        //  deflate
-        //  clean up ACK and data collections
+        //  clean up
         //  call message handlers
     }
 
     override fun send(data: ByteArray, to: InetSocketAddress) {
         // get existing connection or create new
-        // inflate
-        // split
+        // start send coroutine and add it's handle to map
         // fec
-        // add metadata
-        // push all segments to stack (backwards)
-        // send WINDOW SIZE of segments
-        // pop these segments from stack
-        // wait for ACK till RTO or till all WINDOW SIZE ACK's received
+        // add metadata to each repair block
+        // send WINDOW SIZE of repair blocks
+        // wait FLOOD CONTROL TIMEOUT (FCT) or TRANSMISSION TIMEOUT (TRT)
+        // if FCT - send another WINDOW SIZE of repair blocks
+        // if TRT - throw
         // update congestion index
-        // if some ACKs are missing push these segments back to stack
-        // repeat 5 previous steps until stack is empty
     }
 
     override fun addOnMessageHandler(handler: NetworkMessageHandler) {
