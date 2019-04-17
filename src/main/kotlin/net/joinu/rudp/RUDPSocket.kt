@@ -1,5 +1,6 @@
 package net.joinu.rudp
 
+import mu.KotlinLogging
 import net.joinu.nioudp.NetworkMessageHandler
 import net.joinu.nioudp.NioSocket
 import net.joinu.nioudp.NonBlockingUDPSocket
@@ -14,6 +15,14 @@ import java.util.concurrent.ConcurrentSkipListSet
 
 
 class RUDPSocket : NioSocket {
+    companion object {
+        init {
+            Wirehair.init()
+        }
+    }
+
+    private val logger = KotlinLogging.logger("RUDPSocket-${Random().nextInt()}")
+
     val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES)
     val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
     var onMessageHandler: NetworkMessageHandler? = null
@@ -28,15 +37,20 @@ class RUDPSocket : NioSocket {
             when (flag) {
                 Flags.ACK -> {
                     val ack = parseACK(buffer)
+
+                    logger.trace { "Received ACK message for threadId: $ack from: $from" }
+
                     acks.getOrPut(from) { ConcurrentSkipListSet() }.add(ack)
                 }
                 Flags.REPAIR -> {
                     val block = parseRepairBlock(buffer)
 
+                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
+
                     val connection = connections.getOrPut(from) { RUDPConnection(from) }
 
                     if (acks[from]?.contains(block.threadId) == true) {
-                        println("Received a block for already received value")
+                        logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
                         sendACK(block.threadId, from)
                         return@onMessage
                     }
@@ -57,7 +71,7 @@ class RUDPSocket : NioSocket {
 
                     onMessageHandler?.invoke(message, from)
                 }
-                else -> error("Invalid message type received")
+                else -> logger.error { "Received invalid type of message" }
             }
         }
 
@@ -65,8 +79,11 @@ class RUDPSocket : NioSocket {
     }
 
     override fun send(data: ByteArray, to: InetSocketAddress) {
-        val connection = connections.getOrPut(to) { RUDPConnection(to) }
         val threadId = Random().nextLong()
+
+        logger.trace { "Transmission for threadId: $threadId is started" }
+
+        val connection = connections.getOrPut(to) { RUDPConnection(to) }
         val encoder = connection.encoders.getOrPut(threadId) {
             val buffer = ByteBuffer.allocateDirect(data.size)
             buffer.put(data)
@@ -79,8 +96,12 @@ class RUDPSocket : NioSocket {
 
         var blockId = 1
         while (!socket.isClosed()) {
-            if (acks[to]?.contains(threadId) == true) break
-            if (System.currentTimeMillis() - trtBefore > trtTimeoutMs) error("Transmission Timeout elapsed")
+            if (acks[to]?.contains(threadId) == true) {
+                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
+                break
+            }
+            if (System.currentTimeMillis() - trtBefore > trtTimeoutMs)
+                throw TransmissionTimeoutException("Transmission timeout for threadId: $threadId elapsed")
 
             // TODO: handle WINDOW SIZE
             val repairBlockBytes = ByteArray(RECOMMENDED_CHUNK_SIZE_BYTES)
@@ -95,18 +116,24 @@ class RUDPSocket : NioSocket {
                 RECOMMENDED_CHUNK_SIZE_BYTES
             )
 
+            logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
+
             socket.send(repairBlock.serialize().array(), to)
 
             blockId++
 
-            // TODO: wait FCT
+            // TODO: wait FCT as lambda
         }
+
+        logger.trace { "Transmission of threadId: $threadId is finished, cleaning up..." }
 
         encoder.close()
         connections[to]?.encoders?.remove(threadId)
     }
 
     override fun onMessage(handler: NetworkMessageHandler) {
+        logger.trace { "onMessage handler set" }
+
         onMessageHandler = handler
     }
 
@@ -121,6 +148,8 @@ class RUDPSocket : NioSocket {
     private fun parseFlag(buffer: ByteBuffer) = buffer.get()
 
     private fun sendACK(threadId: Long, to: InetSocketAddress) {
+        logger.trace { "Sending ACK for threadId: $threadId to $to" }
+
         val ackSize = Byte.SIZE_BYTES + Long.SIZE_BYTES
         val buffer = ByteBuffer.allocateDirect(ackSize)
         buffer.put(Flags.ACK)
@@ -130,6 +159,8 @@ class RUDPSocket : NioSocket {
         socket.send(buffer.array(), to)
     }
 }
+
+class TransmissionTimeoutException(message: String) : RuntimeException(message)
 
 object Flags {
     const val ACK: Byte = 0

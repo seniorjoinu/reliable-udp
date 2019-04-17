@@ -10,6 +10,11 @@ import java.net.InetSocketAddress
 
 
 object RUDPSocketTest {
+    init {
+        System.setProperty("jna.debug_load", "true")
+        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+    }
+
     @Test
     fun `single send-receive works fine`() {
         runBlocking {
@@ -24,8 +29,12 @@ object RUDPSocketTest {
             val rudp2 = RUDPSocket()
             rudp2.bind(net2Addr)
 
+            println("Sockets bound")
+
             launch(Dispatchers.IO) { rudp1.listen() }
             launch(Dispatchers.IO) { rudp2.listen() }
+
+            println("Sockets are listening")
 
             rudp1.onMessage { bytes, from ->
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
@@ -41,10 +50,14 @@ object RUDPSocketTest {
                 rudp2.close()
             }
 
+            println("Handlers set")
+
             delay(100)
 
             rudp1.send(net1Content, net2Addr)
             rudp2.send(net2Content, net1Addr)
+
+            println("Data sent")
         }
     }
 }

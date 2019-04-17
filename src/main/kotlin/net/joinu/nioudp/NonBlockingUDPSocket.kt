@@ -1,9 +1,11 @@
 package net.joinu.nioudp
 
+import mu.KotlinLogging
 import java.io.Closeable
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
+import java.util.*
 
 
 interface NioSocket : Closeable {
@@ -16,13 +18,15 @@ interface NioSocket : Closeable {
 
 open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
 
-    val actualChunkSizeBytes = chunkSizeBytes + DATA_SIZE_BYTES
+    private val logger = KotlinLogging.logger("NonBlockingUDPSocket-${Random().nextInt()}")
 
     init {
         require(chunkSizeBytes <= MAX_CHUNK_SIZE_BYTES) {
             "Maximum chunk size limit reached (provided: $chunkSizeBytes, limit: $MAX_CHUNK_SIZE_BYTES)"
         }
     }
+
+    val actualChunkSizeBytes = chunkSizeBytes + DATA_SIZE_BYTES
 
     lateinit var channel: DatagramChannel
     var onMessageHandler: NetworkMessageHandler? = null
@@ -35,6 +39,8 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
 
     override fun onMessage(handler: NetworkMessageHandler) {
         onMessageHandler = handler
+
+        logger.trace { "onMessage handler set" }
     }
 
     override fun bind(address: InetSocketAddress) {
@@ -43,22 +49,24 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         channel.bind(address)
 
         state = SocketState.BOUND
+
+        logger.trace { "Address $address bound" }
     }
 
     override fun close() {
         channel.close()
 
         state = SocketState.CLOSED
+
+        logger.trace { "Socket closed" }
     }
 
     protected fun throwIfNotBound() {
-        if (!isBound())
-            throw IllegalStateException("NonBlockingUDPSocket is not bound yet.")
+        if (!isBound()) error("NonBlockingUDPSocket is not bound yet.")
     }
 
     protected fun throwIfClosed() {
-        if (isClosed())
-            throw IllegalStateException("NonBlockingUDPSocket is already closed.")
+        if (isClosed()) error("NonBlockingUDPSocket is already closed.")
     }
 
     override fun listen() {
@@ -67,18 +75,23 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
 
         val buf = ByteBuffer.allocateDirect(actualChunkSizeBytes)
 
+        logger.trace { "Listening" }
+
         while (!isClosed()) {
             val remoteAddress = channel.receive(buf)
 
             if (buf.position() == 0) continue
 
-            buf.flip()
             val size = buf.int
             val data = ByteArray(size)
             buf.get(data)
             buf.clear()
 
-            onMessageHandler?.invoke(data, InetSocketAddress::class.java.cast(remoteAddress))
+            val from = InetSocketAddress::class.java.cast(remoteAddress)
+
+            logger.trace { "Received data packet from $from, invoking onMessage handler" }
+
+            onMessageHandler?.invoke(data, from)
         }
     }
 
@@ -91,7 +104,10 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         val wrappedData = ByteBuffer.allocateDirect(actualChunkSizeBytes)
             .putInt(data.size)
             .put(data)
-        wrappedData.position(0)
+
+        wrappedData.flip()
+
+        logger.trace { "Sending $data to $to" }
 
         channel.send(wrappedData, to)
     }

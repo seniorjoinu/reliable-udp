@@ -33,8 +33,10 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime:$serialization_runtime_version"
     implementation 'de.ruedigermoeller:fst:2.56'
     implementation "com.github.seniorjoinu:wirehair-wrapper:$wirehair_wrapper_version"
+    implementation 'io.github.microutils:kotlin-logging:1.6.24'
 
     testImplementation "org.junit.jupiter:junit-jupiter-params:$junit_version"
+    testImplementation group: 'org.slf4j', name: 'slf4j-simple', version: '1.7.26'
 }
 
 compileKotlin {
