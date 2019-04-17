@@ -5,72 +5,105 @@ import net.joinu.nioudp.NioSocket
 import net.joinu.nioudp.NonBlockingUDPSocket
 import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.wirehair.Wirehair
+import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentSkipListSet
 
-/**
- * Data piece structure: {
- *  data: ByteArray,
- *  threadId: Long,
- *  sequenceIdx: Int,
- *  sequenceSize: Int
- * }
- */
 
-class RUDPSocket(chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
-    companion object {
-        init {
-            //SerializationUtils.registerClass()
-        }
-    }
-
-    val socket = NonBlockingUDPSocket(chunkSizeBytes)
+class RUDPSocket : NioSocket {
+    val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES)
     val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
     var onMessageHandler: NetworkMessageHandler? = null
-
-    private fun sendACK() {}
+    var acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
     override fun listen() {
         socket.onMessage { bytes, from ->
-
-            // TODO: handle ACK
-
             val buffer = ByteBuffer.wrap(bytes)
-            val block = RepairBlock.deserialize(buffer)
 
-            val connection = connections.getOrPut(from) { RUDPConnection(from) }
-            val decoder =
-                connection.decoders.getOrPut(block.threadId) { Wirehair.Decoder(block.messageBytes, block.blockBytes) }
+            val flag = parseFlag(buffer)
 
-            val enough = decoder.decode(block.blockId, block.data, block.writeLen)
+            when (flag) {
+                Flags.ACK -> {
+                    val ack = parseACK(buffer)
+                    acks.getOrPut(from) { ConcurrentSkipListSet() }.add(ack)
+                }
+                Flags.REPAIR -> {
+                    val block = parseRepairBlock(buffer)
 
-            if (enough) {
-                sendACK()
-                val message = ByteArray(block.messageBytes)
-                decoder.recover(message, block.messageBytes)
-                decoder.close()
+                    val connection = connections.getOrPut(from) { RUDPConnection(from) }
 
-                // TODO: valid cleanup
-                // TODO: handle blocks after sent ACK
+                    if (acks[from]?.contains(block.threadId) == true) {
+                        println("Received a block for already received value")
+                        sendACK(block.threadId, from)
+                        return@onMessage
+                    }
 
-                onMessageHandler?.invoke(message, from)
+                    val decoder = connection.decoders.getOrPut(block.threadId) {
+                        Wirehair.Decoder(block.messageBytes, block.blockBytes)
+                    }
+
+                    val enough = decoder.decode(block.blockId, block.data, block.writeLen)
+
+                    if (!enough) return@onMessage
+
+                    sendACK(block.threadId, from)
+                    val message = ByteArray(block.messageBytes)
+                    decoder.recover(message, block.messageBytes)
+                    decoder.close()
+                    connections[from]?.decoders?.remove(block.threadId)
+
+                    onMessageHandler?.invoke(message, from)
+                }
+                else -> error("Invalid message type received")
             }
         }
+
         socket.listen()
     }
 
     override fun send(data: ByteArray, to: InetSocketAddress) {
-        // get existing connection or create new
+        val connection = connections.getOrPut(to) { RUDPConnection(to) }
+        val threadId = Random().nextLong()
+        val encoder = connection.encoders.getOrPut(threadId) {
+            val buffer = ByteBuffer.allocateDirect(data.size)
+            buffer.put(data)
 
-        // start send coroutine and add it's handle to map
-        // fec
-        // add metadata to each repair block
-        // send WINDOW SIZE of repair blocks
-        // wait FLOOD CONTROL TIMEOUT (FCT) or TRANSMISSION TIMEOUT (TRT)
-        // if FCT - send another WINDOW SIZE of repair blocks
-        // if TRT - throw
-        // update congestion index
+            Wirehair.Encoder(buffer as DirectBuffer, data.size, RECOMMENDED_CHUNK_SIZE_BYTES)
+        }
+
+        val trtTimeoutMs = 30000
+        val trtBefore = System.currentTimeMillis()
+
+        var blockId = 1
+        while (!socket.isClosed()) {
+            if (acks[to]?.contains(threadId) == true) break
+            if (System.currentTimeMillis() - trtBefore > trtTimeoutMs) error("Transmission Timeout elapsed")
+
+            // TODO: handle WINDOW SIZE
+            val repairBlockBytes = ByteArray(RECOMMENDED_CHUNK_SIZE_BYTES)
+            val writeLen = encoder.encode(blockId, repairBlockBytes, RECOMMENDED_CHUNK_SIZE_BYTES)
+
+            val repairBlock = RepairBlock(
+                repairBlockBytes,
+                writeLen,
+                threadId,
+                blockId,
+                data.size,
+                RECOMMENDED_CHUNK_SIZE_BYTES
+            )
+
+            socket.send(repairBlock.serialize().array(), to)
+
+            blockId++
+
+            // TODO: wait FCT
+        }
+
+        encoder.close()
+        connections[to]?.encoders?.remove(threadId)
     }
 
     override fun onMessage(handler: NetworkMessageHandler) {
@@ -82,10 +115,26 @@ class RUDPSocket(chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket
     override fun close() = socket.close()
 
     override fun bind(address: InetSocketAddress) = socket.bind(address)
+
+    private fun parseRepairBlock(buffer: ByteBuffer) = RepairBlock.deserialize(buffer)
+    private fun parseACK(buffer: ByteBuffer) = buffer.long
+    private fun parseFlag(buffer: ByteBuffer) = buffer.get()
+
+    private fun sendACK(threadId: Long, to: InetSocketAddress) {
+        val ackSize = Byte.SIZE_BYTES + Long.SIZE_BYTES
+        val buffer = ByteBuffer.allocateDirect(ackSize)
+        buffer.put(Flags.ACK)
+        buffer.putLong(threadId)
+        buffer.flip()
+
+        socket.send(buffer.array(), to)
+    }
 }
 
-val LONG_SIZE_BYTES = 8
-val INT_SIZE_BYTES = 4
+object Flags {
+    const val ACK: Byte = 0
+    const val REPAIR: Byte = 1
+}
 
 data class RepairBlock(
     val data: ByteArray,
@@ -97,7 +146,6 @@ data class RepairBlock(
 ) {
     companion object {
         fun deserialize(buffer: ByteBuffer): RepairBlock {
-            buffer.flip()
             val threadId = buffer.long
             val messageBytes = buffer.int
             val blockId = buffer.int
@@ -111,9 +159,11 @@ data class RepairBlock(
     }
 
     fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocateDirect(writeLen + INT_SIZE_BYTES * 4 + LONG_SIZE_BYTES)
+        val buffer = ByteBuffer.allocateDirect(writeLen + Int.SIZE_BYTES * 4 + Long.SIZE_BYTES)
 
-        return buffer.putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes).putInt(writeLen)
-            .put(data)
+        buffer.putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes).putInt(writeLen).put(data)
+        buffer.flip()
+
+        return buffer
     }
 }
