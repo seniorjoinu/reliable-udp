@@ -10,7 +10,7 @@ interface NioSocket : Closeable {
     fun bind(address: InetSocketAddress)
     fun listen()
     fun send(data: ByteArray, to: InetSocketAddress)
-    fun addOnMessageHandler(handler: NetworkMessageHandler)
+    fun onMessage(handler: NetworkMessageHandler)
     fun getSocketState(): SocketState
 }
 
@@ -25,7 +25,7 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
     }
 
     lateinit var channel: DatagramChannel
-    val onMessageHandlers = mutableListOf<NetworkMessageHandler>()
+    var onMessageHandler: NetworkMessageHandler? = null
 
     protected var state = SocketState.UNBOUND
 
@@ -33,8 +33,8 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
     fun isBound(): Boolean = state == SocketState.BOUND
     fun isClosed(): Boolean = state == SocketState.CLOSED
 
-    override fun addOnMessageHandler(handler: NetworkMessageHandler) {
-        onMessageHandlers.add(handler)
+    override fun onMessage(handler: NetworkMessageHandler) {
+        onMessageHandler = handler
     }
 
     override fun bind(address: InetSocketAddress) {
@@ -78,9 +78,7 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
             buf.get(data)
             buf.clear()
 
-            onMessageHandlers.forEach {
-                it(data, InetSocketAddress::class.java.cast(remoteAddress))
-            }
+            onMessageHandler?.invoke(data, InetSocketAddress::class.java.cast(remoteAddress))
         }
     }
 

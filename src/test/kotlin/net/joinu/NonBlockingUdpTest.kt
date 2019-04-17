@@ -40,14 +40,14 @@ class NonBlockingUdpTest {
             launch(Dispatchers.IO) { udp1.listen() }
             launch(Dispatchers.IO) { udp2.listen() }
 
-            udp1.addOnMessageHandler { bytes, from ->
+            udp1.onMessage { bytes, from ->
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
                 udp1.close()
             }
 
-            udp2.addOnMessageHandler { bytes, from ->
+            udp2.onMessage { bytes, from ->
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
 
@@ -80,7 +80,7 @@ class NonBlockingUdpTest {
                 }
                 launch(Dispatchers.IO) { udp1.listen() }
 
-                udp1.addOnMessageHandler { bytes, from ->
+                udp1.onMessage { bytes, from ->
                     resultCount--
 
                     if (resultCount == 0)

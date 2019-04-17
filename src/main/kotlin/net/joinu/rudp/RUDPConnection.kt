@@ -2,11 +2,16 @@ package net.joinu.rudp
 
 import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.rudp.cma.CongestionIndex
+import net.joinu.wirehair.Wirehair
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 
 data class RUDPConnection(val address: InetSocketAddress, val congestionIndex: CongestionIndex = CongestionIndex()) {
+    val encoders = ConcurrentHashMap<Long, Wirehair.Encoder>()
+    val decoders = ConcurrentHashMap<Long, Wirehair.Decoder>()
+
     /**
      * Window size in bytes - amount of bytes which can be transmitted without acknowledgement.
      * The worse connection is - the less window size is.

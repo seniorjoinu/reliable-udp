@@ -2,8 +2,11 @@ package net.joinu.rudp
 
 import net.joinu.nioudp.NetworkMessageHandler
 import net.joinu.nioudp.NioSocket
-import net.joinu.nioudp.SocketState
+import net.joinu.nioudp.NonBlockingUDPSocket
+import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
+import net.joinu.wirehair.Wirehair
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -15,29 +18,51 @@ import java.util.concurrent.ConcurrentHashMap
  * }
  */
 
-class RUDPSocket : NioSocket {
+class RUDPSocket(chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
     companion object {
         init {
             //SerializationUtils.registerClass()
         }
     }
 
+    val socket = NonBlockingUDPSocket(chunkSizeBytes)
     val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
+    var onMessageHandler: NetworkMessageHandler? = null
+
+    private fun sendACK() {}
 
     override fun listen() {
-        // wait for new message
-        // if there is no connection with this address - create
-        // if it is ACK - cancel send coroutine
-        // if it is a repair block - accumulate it
-        // when all needed repair blocks received:
-        //  send ACK
-        //  unfec
-        //  clean up
-        //  call message handlers
+        socket.onMessage { bytes, from ->
+
+            // TODO: handle ACK
+
+            val buffer = ByteBuffer.wrap(bytes)
+            val block = RepairBlock.deserialize(buffer)
+
+            val connection = connections.getOrPut(from) { RUDPConnection(from) }
+            val decoder =
+                connection.decoders.getOrPut(block.threadId) { Wirehair.Decoder(block.messageBytes, block.blockBytes) }
+
+            val enough = decoder.decode(block.blockId, block.data, block.writeLen)
+
+            if (enough) {
+                sendACK()
+                val message = ByteArray(block.messageBytes)
+                decoder.recover(message, block.messageBytes)
+                decoder.close()
+
+                // TODO: valid cleanup
+                // TODO: handle blocks after sent ACK
+
+                onMessageHandler?.invoke(message, from)
+            }
+        }
+        socket.listen()
     }
 
     override fun send(data: ByteArray, to: InetSocketAddress) {
         // get existing connection or create new
+
         // start send coroutine and add it's handle to map
         // fec
         // add metadata to each repair block
@@ -48,19 +73,47 @@ class RUDPSocket : NioSocket {
         // update congestion index
     }
 
-    override fun addOnMessageHandler(handler: NetworkMessageHandler) {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    override fun onMessage(handler: NetworkMessageHandler) {
+        onMessageHandler = handler
     }
 
-    override fun getSocketState(): SocketState {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    override fun getSocketState() = socket.getSocketState()
+
+    override fun close() = socket.close()
+
+    override fun bind(address: InetSocketAddress) = socket.bind(address)
+}
+
+val LONG_SIZE_BYTES = 8
+val INT_SIZE_BYTES = 4
+
+data class RepairBlock(
+    val data: ByteArray,
+    val writeLen: Int,
+    val threadId: Long,
+    val blockId: Int,
+    val messageBytes: Int,
+    val blockBytes: Int
+) {
+    companion object {
+        fun deserialize(buffer: ByteBuffer): RepairBlock {
+            buffer.flip()
+            val threadId = buffer.long
+            val messageBytes = buffer.int
+            val blockId = buffer.int
+            val blockBytes = buffer.int
+            val writeLen = buffer.int
+            val data = ByteArray(writeLen)
+            buffer.get(data)
+
+            return RepairBlock(data, writeLen, threadId, blockId, messageBytes, blockBytes)
+        }
     }
 
-    override fun close() {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
+    fun serialize(): ByteBuffer {
+        val buffer = ByteBuffer.allocateDirect(writeLen + INT_SIZE_BYTES * 4 + LONG_SIZE_BYTES)
 
-    override fun bind(address: InetSocketAddress) {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+        return buffer.putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes).putInt(writeLen)
+            .put(data)
     }
 }
