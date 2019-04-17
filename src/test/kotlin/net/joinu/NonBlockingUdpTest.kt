@@ -12,15 +12,17 @@ class NonBlockingUdpTest {
     @Test
     fun `send and receive work fine`() {
         runBlocking {
+            val before = System.currentTimeMillis()
+
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(10) { it.toByte() }
-            val net2Content = ByteArray(10) { (10 - it).toByte() }
+            val net1Content = ByteArray(10000) { it.toByte() }
+            val net2Content = ByteArray(10000) { (10000 - it).toByte() }
 
-            val udp1 = NonBlockingUDPSocket()
+            val udp1 = NonBlockingUDPSocket(10001)
             udp1.bind(net1Addr)
 
-            val udp2 = NonBlockingUDPSocket()
+            val udp2 = NonBlockingUDPSocket(10001)
             udp2.bind(net2Addr)
 
             launch(Dispatchers.IO) { udp1.listen() }
@@ -33,7 +35,11 @@ class NonBlockingUdpTest {
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
+                val after = System.currentTimeMillis()
+                println("Transmission of 20kb took ${after - before} ms locally")
+
                 udp1.close()
+                udp2.close()
             }
 
             udp2.onMessage { buffer, from ->
@@ -42,8 +48,6 @@ class NonBlockingUdpTest {
 
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
-
-                udp2.close()
             }
 
             delay(100)
@@ -91,7 +95,7 @@ class NonBlockingUdpTest {
         println("$packetCount packets $packetSizeBytes bytes each timeout $timeoutMs ms: lost $resultCount (${resultCount.toDouble() / packetCount * 100}%)")
     }
 
-    @Test
+    //@Test
     fun `udp packet loss benchmark`() {
         udpStress(1000, 10, 2000)
         udpStress(1000, 50, 2000)

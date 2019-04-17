@@ -2,7 +2,6 @@ package net.joinu.rudp
 
 import mu.KotlinLogging
 import net.joinu.nioudp.NetworkMessageHandler
-import net.joinu.nioudp.NioSocket
 import net.joinu.nioudp.NonBlockingUDPSocket
 import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.wirehair.Wirehair
@@ -14,21 +13,21 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListSet
 
 
-class RUDPSocket : NioSocket {
+class ConfigurableRUDPSocket {
     companion object {
         init {
             Wirehair.init()
         }
     }
 
-    private val logger = KotlinLogging.logger("RUDPSocket-${Random().nextInt()}")
+    private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
 
     val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES + RepairBlock.METADATA_SIZE_BYTES)
     val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
     var onMessageHandler: NetworkMessageHandler? = null
     var acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
-    override fun listen() {
+    fun listen() {
         socket.onMessage { bytes, from ->
             val flag = parseFlag(bytes)
 
@@ -78,7 +77,14 @@ class RUDPSocket : NioSocket {
         socket.listen()
     }
 
-    override fun send(data: ByteBuffer, to: InetSocketAddress) {
+    fun send(
+        data: ByteBuffer,
+        to: InetSocketAddress,
+        repairBlockSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES,
+        trtTimeoutMs: Long = 15000,
+        fctTimeoutMsProvider: () -> Long,
+        windowSizeProvider: () -> Int
+    ) {
         val threadId = Random().nextLong()
 
         logger.trace { "Transmission for threadId: $threadId is started" }
@@ -89,25 +95,21 @@ class RUDPSocket : NioSocket {
             buffer.put(data)
             buffer.flip()
 
-            Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), RECOMMENDED_CHUNK_SIZE_BYTES)
+            Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), repairBlockSizeBytes)
         }
 
-        val trtTimeoutMs = 30000
         val trtBefore = System.currentTimeMillis()
 
+        val n = data.limit() / repairBlockSizeBytes + 1
         var blockId = 1
-        while (!socket.isClosed()) {
-            if (acks[to]?.contains(threadId) == true) {
-                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
-                break
-            }
-            if (System.currentTimeMillis() - trtBefore > trtTimeoutMs)
-                throw TransmissionTimeoutException("Transmission timeout for threadId: $threadId elapsed")
 
-            // TODO: handle WINDOW SIZE
-            val repairBlockBytes = ByteBuffer.allocateDirect(RECOMMENDED_CHUNK_SIZE_BYTES)
+        // send N repair blocks
+        while (!socket.isClosed() && blockId <= n) {
+            throwIfTransmissionTimeoutElapsed(trtBefore, trtTimeoutMs, threadId)
 
-            val writeLen = encoder.encode(blockId, repairBlockBytes as DirectBuffer, RECOMMENDED_CHUNK_SIZE_BYTES)
+            val repairBlockBytes = ByteBuffer.allocateDirect(repairBlockSizeBytes)
+
+            val writeLen = encoder.encode(blockId, repairBlockBytes as DirectBuffer, repairBlockSizeBytes)
 
             val repairBlock = RepairBlock(
                 repairBlockBytes,
@@ -115,7 +117,7 @@ class RUDPSocket : NioSocket {
                 threadId,
                 blockId,
                 data.limit(),
-                RECOMMENDED_CHUNK_SIZE_BYTES
+                repairBlockSizeBytes
             )
 
             logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
@@ -123,9 +125,51 @@ class RUDPSocket : NioSocket {
             socket.send(repairBlock.serialize(), to)
 
             blockId++
+        }
 
-            if (blockId * RECOMMENDED_CHUNK_SIZE_BYTES > data.limit())
-                Thread.sleep(100)
+        // waiting FCT and send another WINDOW SIZE of repair blocks
+        while (!socket.isClosed()) {
+            logger.trace { "Sleeping for FCT" }
+
+            val fctTimeout = fctTimeoutMsProvider()
+            val ackFound = checkTilTimeElapse(fctTimeout) { ackReceived(to, threadId) }
+
+            if (ackFound) {
+                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
+                break
+            }
+
+            val windowSize = windowSizeProvider()
+            val k = windowSize / repairBlockSizeBytes + 1
+            val prevWindowBlockId = blockId
+
+            while (!socket.isClosed() && blockId <= prevWindowBlockId + k) {
+                if (ackReceived(to, threadId)) {
+                    logger.trace { "Received ACK for threadId: $threadId, stopping..." }
+                    break
+                }
+
+                throwIfTransmissionTimeoutElapsed(trtBefore, trtTimeoutMs, threadId)
+
+                val repairBlockBytes = ByteBuffer.allocateDirect(repairBlockSizeBytes)
+
+                val writeLen = encoder.encode(blockId, repairBlockBytes as DirectBuffer, repairBlockSizeBytes)
+
+                val repairBlock = RepairBlock(
+                    repairBlockBytes,
+                    writeLen,
+                    threadId,
+                    blockId,
+                    data.limit(),
+                    repairBlockSizeBytes
+                )
+
+                logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
+
+                socket.send(repairBlock.serialize(), to)
+
+                blockId++
+            }
         }
 
         logger.trace { "Transmission of threadId: $threadId is finished, cleaning up..." }
@@ -134,17 +178,24 @@ class RUDPSocket : NioSocket {
         connections[to]?.encoders?.remove(threadId)
     }
 
-    override fun onMessage(handler: NetworkMessageHandler) {
+    private fun ackReceived(from: InetSocketAddress, threadId: Long) = acks[from]?.contains(threadId) == true
+
+    private fun throwIfTransmissionTimeoutElapsed(trtBefore: Long, trtTimeoutMs: Long, threadId: Long) {
+        if (System.currentTimeMillis() - trtBefore > trtTimeoutMs)
+            throw TransmissionTimeoutException("Transmission timeout for threadId: $threadId elapsed")
+    }
+
+    fun onMessage(handler: NetworkMessageHandler) {
         logger.trace { "onMessage handler set" }
 
         onMessageHandler = handler
     }
 
-    override fun getSocketState() = socket.getSocketState()
+    fun getSocketState() = socket.getSocketState()
 
-    override fun close() = socket.close()
+    fun close() = socket.close()
 
-    override fun bind(address: InetSocketAddress) = socket.bind(address)
+    fun bind(address: InetSocketAddress) = socket.bind(address)
 
     private fun parseRepairBlock(buffer: ByteBuffer) = RepairBlock.deserialize(buffer)
     private fun parseACK(buffer: ByteBuffer) = buffer.long
@@ -191,8 +242,6 @@ data class RepairBlock(
             data.put(buffer)
             data.flip()
 
-            println("Deserialize - $blockId - ${data.toStringBytes()}")
-
             return RepairBlock(data, writeLen, threadId, blockId, messageBytes, blockBytes)
         }
     }
@@ -200,11 +249,16 @@ data class RepairBlock(
     fun serialize(): ByteBuffer {
         val buffer = ByteBuffer.allocateDirect(writeLen + METADATA_SIZE_BYTES)
 
-        println("Serialize - $blockId - ${data.toStringBytes()}")
-
         data.limit(writeLen)
-        buffer.put(Flags.REPAIR).putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes)
-            .putInt(writeLen).put(data)
+        buffer
+            .put(Flags.REPAIR)
+            .putLong(threadId)
+            .putInt(messageBytes)
+            .putInt(blockId)
+            .putInt(blockBytes)
+            .putInt(writeLen)
+            .put(data)
+
         buffer.flip()
 
         return buffer
@@ -216,4 +270,15 @@ fun ByteBuffer.toStringBytes(): String {
     this.duplicate().get(t)
 
     return t.joinToString { String.format("%02X", it) }
+}
+
+fun checkTilTimeElapse(timeMs: Long, block: () -> Boolean): Boolean {
+    val before = System.currentTimeMillis()
+    while (true) {
+        if (block()) return true
+
+        val after = System.currentTimeMillis()
+
+        if (after - before >= timeMs) return false
+    }
 }

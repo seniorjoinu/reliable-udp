@@ -28,6 +28,7 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
 
     val actualChunkSizeBytes = chunkSizeBytes + DATA_SIZE_BYTES
 
+    // TODO: add lock to channel
     lateinit var channel: DatagramChannel
     var onMessageHandler: NetworkMessageHandler? = null
 
