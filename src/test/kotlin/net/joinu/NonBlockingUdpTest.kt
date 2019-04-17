@@ -2,7 +2,6 @@ package net.joinu
 
 import kotlinx.coroutines.*
 import net.joinu.nioudp.NonBlockingUDPSocket
-import net.joinu.utils.SerializationUtils
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.net.InetSocketAddress
@@ -10,19 +9,6 @@ import java.util.*
 
 
 class NonBlockingUdpTest {
-    @Test
-    fun `serialization works fine`() {
-        val pack = "Im going to be serialized"
-
-        val serialized = SerializationUtils.toBytes(pack)
-        val deserialized = SerializationUtils.toAny<String>(serialized)
-
-        println("Serialized: ${serialized.joinToString { String.format("%02X", it) }}")
-        println("Deserialized: $deserialized")
-
-        assert(deserialized == pack)
-    }
-
     @Test
     fun `send and receive work fine`() {
         runBlocking {
