@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.RUDPSocket
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 
 
 object RUDPSocketTest {
@@ -36,28 +37,43 @@ object RUDPSocketTest {
 
             println("Sockets are listening")
 
-            rudp1.onMessage { bytes, from ->
+            rudp1.onMessage { buffer, from ->
+                val bytes = ByteArray(buffer.limit())
+                buffer.get(bytes)
+
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
+                // TODO: fix invalid data
+
                 rudp1.close()
+                rudp2.close()
             }
 
-            rudp2.onMessage { bytes, from ->
+            rudp2.onMessage { buffer, from ->
+                val bytes = ByteArray(buffer.limit())
+                buffer.get(bytes)
+
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
-
-                rudp2.close()
             }
 
             println("Handlers set")
 
             delay(100)
 
-            rudp1.send(net1Content, net2Addr)
-            rudp2.send(net2Content, net1Addr)
+            rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
+            rudp2.send(net2Content.toDirectByteBuffer(), net1Addr)
 
             println("Data sent")
         }
     }
+}
+
+fun ByteArray.toDirectByteBuffer(): ByteBuffer {
+    val buf = ByteBuffer.allocateDirect(this.size)
+    buf.put(this)
+    buf.flip()
+
+    return buf
 }

@@ -40,14 +40,20 @@ class NonBlockingUdpTest {
             launch(Dispatchers.IO) { udp1.listen() }
             launch(Dispatchers.IO) { udp2.listen() }
 
-            udp1.onMessage { bytes, from ->
+            udp1.onMessage { buffer, from ->
+                val bytes = ByteArray(buffer.limit())
+                buffer.get(bytes)
+
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
                 udp1.close()
             }
 
-            udp2.onMessage { bytes, from ->
+            udp2.onMessage { buffer, from ->
+                val bytes = ByteArray(buffer.limit())
+                buffer.get(bytes)
+
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
 
@@ -56,8 +62,8 @@ class NonBlockingUdpTest {
 
             delay(100)
 
-            udp1.send(net1Content, net2Addr)
-            udp2.send(net2Content, net1Addr)
+            udp1.send(net1Content.toDirectByteBuffer(), net2Addr)
+            udp2.send(net2Content.toDirectByteBuffer(), net1Addr)
         }
 
         println("end of test")
@@ -91,7 +97,7 @@ class NonBlockingUdpTest {
                     val net2Content = ByteArray(packetSizeBytes)
                     Random().nextBytes(net2Content)
 
-                    udp1.send(net2Content, net1Addr)
+                    udp1.send(net2Content.toDirectByteBuffer(), net1Addr)
                 }
             }
         }

@@ -23,27 +23,25 @@ class RUDPSocket : NioSocket {
 
     private val logger = KotlinLogging.logger("RUDPSocket-${Random().nextInt()}")
 
-    val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES)
+    val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES + RepairBlock.METADATA_SIZE_BYTES)
     val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
     var onMessageHandler: NetworkMessageHandler? = null
     var acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
     override fun listen() {
         socket.onMessage { bytes, from ->
-            val buffer = ByteBuffer.wrap(bytes)
-
-            val flag = parseFlag(buffer)
+            val flag = parseFlag(bytes)
 
             when (flag) {
                 Flags.ACK -> {
-                    val ack = parseACK(buffer)
+                    val ack = parseACK(bytes)
 
                     logger.trace { "Received ACK message for threadId: $ack from: $from" }
 
                     acks.getOrPut(from) { ConcurrentSkipListSet() }.add(ack)
                 }
                 Flags.REPAIR -> {
-                    val block = parseRepairBlock(buffer)
+                    val block = parseRepairBlock(bytes)
 
                     logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
@@ -59,13 +57,15 @@ class RUDPSocket : NioSocket {
                         Wirehair.Decoder(block.messageBytes, block.blockBytes)
                     }
 
-                    val enough = decoder.decode(block.blockId, block.data, block.writeLen)
+                    val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
 
                     if (!enough) return@onMessage
 
                     sendACK(block.threadId, from)
-                    val message = ByteArray(block.messageBytes)
-                    decoder.recover(message, block.messageBytes)
+
+                    val message = ByteBuffer.allocateDirect(block.messageBytes)
+                    decoder.recover(message as DirectBuffer, block.messageBytes)
+
                     decoder.close()
                     connections[from]?.decoders?.remove(block.threadId)
 
@@ -78,17 +78,18 @@ class RUDPSocket : NioSocket {
         socket.listen()
     }
 
-    override fun send(data: ByteArray, to: InetSocketAddress) {
+    override fun send(data: ByteBuffer, to: InetSocketAddress) {
         val threadId = Random().nextLong()
 
         logger.trace { "Transmission for threadId: $threadId is started" }
 
         val connection = connections.getOrPut(to) { RUDPConnection(to) }
         val encoder = connection.encoders.getOrPut(threadId) {
-            val buffer = ByteBuffer.allocateDirect(data.size)
+            val buffer = ByteBuffer.allocateDirect(data.limit())
             buffer.put(data)
+            buffer.flip()
 
-            Wirehair.Encoder(buffer as DirectBuffer, data.size, RECOMMENDED_CHUNK_SIZE_BYTES)
+            Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), RECOMMENDED_CHUNK_SIZE_BYTES)
         }
 
         val trtTimeoutMs = 30000
@@ -104,25 +105,27 @@ class RUDPSocket : NioSocket {
                 throw TransmissionTimeoutException("Transmission timeout for threadId: $threadId elapsed")
 
             // TODO: handle WINDOW SIZE
-            val repairBlockBytes = ByteArray(RECOMMENDED_CHUNK_SIZE_BYTES)
-            val writeLen = encoder.encode(blockId, repairBlockBytes, RECOMMENDED_CHUNK_SIZE_BYTES)
+            val repairBlockBytes = ByteBuffer.allocateDirect(RECOMMENDED_CHUNK_SIZE_BYTES)
+
+            val writeLen = encoder.encode(blockId, repairBlockBytes as DirectBuffer, RECOMMENDED_CHUNK_SIZE_BYTES)
 
             val repairBlock = RepairBlock(
                 repairBlockBytes,
                 writeLen,
                 threadId,
                 blockId,
-                data.size,
+                data.limit(),
                 RECOMMENDED_CHUNK_SIZE_BYTES
             )
 
             logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
 
-            socket.send(repairBlock.serialize().array(), to)
+            socket.send(repairBlock.serialize(), to)
 
             blockId++
 
-            // TODO: wait FCT as lambda
+            if (blockId * RECOMMENDED_CHUNK_SIZE_BYTES > data.limit())
+                Thread.sleep(100)
         }
 
         logger.trace { "Transmission of threadId: $threadId is finished, cleaning up..." }
@@ -156,7 +159,7 @@ class RUDPSocket : NioSocket {
         buffer.putLong(threadId)
         buffer.flip()
 
-        socket.send(buffer.array(), to)
+        socket.send(buffer, to)
     }
 }
 
@@ -168,7 +171,7 @@ object Flags {
 }
 
 data class RepairBlock(
-    val data: ByteArray,
+    val data: ByteBuffer,
     val writeLen: Int,
     val threadId: Long,
     val blockId: Int,
@@ -176,25 +179,41 @@ data class RepairBlock(
     val blockBytes: Int
 ) {
     companion object {
+        const val METADATA_SIZE_BYTES = Int.SIZE_BYTES * 4 + Long.SIZE_BYTES + Byte.SIZE_BYTES
+
         fun deserialize(buffer: ByteBuffer): RepairBlock {
             val threadId = buffer.long
             val messageBytes = buffer.int
             val blockId = buffer.int
             val blockBytes = buffer.int
             val writeLen = buffer.int
-            val data = ByteArray(writeLen)
-            buffer.get(data)
+            val data = ByteBuffer.allocateDirect(writeLen)
+            data.put(buffer)
+            data.flip()
+
+            println("Deserialize - $blockId - ${data.toStringBytes()}")
 
             return RepairBlock(data, writeLen, threadId, blockId, messageBytes, blockBytes)
         }
     }
 
     fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocateDirect(writeLen + Int.SIZE_BYTES * 4 + Long.SIZE_BYTES)
+        val buffer = ByteBuffer.allocateDirect(writeLen + METADATA_SIZE_BYTES)
 
-        buffer.putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes).putInt(writeLen).put(data)
+        println("Serialize - $blockId - ${data.toStringBytes()}")
+
+        data.limit(writeLen)
+        buffer.put(Flags.REPAIR).putLong(threadId).putInt(messageBytes).putInt(blockId).putInt(blockBytes)
+            .putInt(writeLen).put(data)
         buffer.flip()
 
         return buffer
     }
+}
+
+fun ByteBuffer.toStringBytes(): String {
+    val t = ByteArray(this.limit())
+    this.duplicate().get(t)
+
+    return t.joinToString { String.format("%02X", it) }
 }

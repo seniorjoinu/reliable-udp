@@ -11,7 +11,7 @@ import java.util.*
 interface NioSocket : Closeable {
     fun bind(address: InetSocketAddress)
     fun listen()
-    fun send(data: ByteArray, to: InetSocketAddress)
+    fun send(data: ByteBuffer, to: InetSocketAddress)
     fun onMessage(handler: NetworkMessageHandler)
     fun getSocketState(): SocketState
 }
@@ -82,9 +82,13 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
 
             if (buf.position() == 0) continue
 
+            buf.flip()
             val size = buf.int
-            val data = ByteArray(size)
-            buf.get(data)
+            val data = ByteBuffer.allocateDirect(size)
+            buf.limit(size + Int.SIZE_BYTES)
+            data.put(buf)
+            data.flip()
+
             buf.clear()
 
             val from = InetSocketAddress::class.java.cast(remoteAddress)
@@ -95,19 +99,19 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         }
     }
 
-    override fun send(data: ByteArray, to: InetSocketAddress) {
+    override fun send(data: ByteBuffer, to: InetSocketAddress) {
         throwIfNotBound()
         throwIfClosed()
 
-        require(data.size <= chunkSizeBytes) { "Size of data should be LEQ than $chunkSizeBytes bytes" }
+        require(data.limit() <= chunkSizeBytes) { "Size of data should be LEQ than $chunkSizeBytes bytes" }
 
         val wrappedData = ByteBuffer.allocateDirect(actualChunkSizeBytes)
-            .putInt(data.size)
-            .put(data)
 
+        wrappedData.putInt(data.limit())
+        wrappedData.put(data)
         wrappedData.flip()
 
-        logger.trace { "Sending $data to $to" }
+        logger.trace { "Sending $wrappedData to $to" }
 
         channel.send(wrappedData, to)
     }
