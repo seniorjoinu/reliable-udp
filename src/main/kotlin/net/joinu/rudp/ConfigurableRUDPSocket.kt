@@ -25,10 +25,14 @@ class ConfigurableRUDPSocket(mtu: Int) {
     private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
 
     val socket = NonBlockingUDPSocket()
+    
+    // TODO: clean up encoders and decoders eventually
     val decoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Pair<Wirehair.Decoder, Mutex>>>()
     val encoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Wirehair.Encoder>>()
+
     // TODO: clean up acks eventually
     val acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
+
     var onMessageHandler: NetworkMessageHandler? = null
     val repairBlockSizeBytes = mtu - RepairBlock.METADATA_SIZE_BYTES
 
@@ -49,13 +53,13 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
                     logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
-                    if (acks[from]?.contains(block.threadId) == true) {
+                    if (ackReceived(from, block.threadId)) {
                         logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
                         sendACK(block.threadId, from)
                         return@onMessage
                     }
 
-                    val (decoder, decoderMutex) = getDecoder(from, block)
+                    val (decoder, decoderMutex) = getDecoderAndMutex(from, block)
 
                     decoderMutex.lock()
 
@@ -77,7 +81,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
                         sendACK(block.threadId, from)
 
-                        // this will start in the same thread?
                         onMessageHandler?.invoke(message, from)
                     }
 
@@ -91,7 +94,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
         socket.listen()
     }
 
-    private fun getDecoder(address: InetSocketAddress, block: RepairBlock): Pair<Wirehair.Decoder, Mutex> {
+    private fun getDecoderAndMutex(address: InetSocketAddress, block: RepairBlock): Pair<Wirehair.Decoder, Mutex> {
         return decoders.getOrPut(address) { ConcurrentHashMap() }.getOrPut(block.threadId) {
             Pair(Wirehair.Decoder(block.messageBytes, block.blockBytes), Mutex())
         }

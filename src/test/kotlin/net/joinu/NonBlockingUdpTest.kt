@@ -41,10 +41,9 @@ class NonBlockingUdpTest {
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
                 val after = System.currentTimeMillis()
-                println("Transmission of 20kb took ${after - before} ms locally")
+                println("2->1 Transmission of 10kb took ${after - before} ms locally")
 
                 udp1.close()
-                udp2.close()
             }
 
             udp2.onMessage { buffer, from ->
@@ -53,6 +52,11 @@ class NonBlockingUdpTest {
 
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
+
+                val after = System.currentTimeMillis()
+                println("1->2 Transmission of 10kb took ${after - before} ms locally")
+
+                udp2.close()
             }
 
             launch { udp1.send(net1Content.toDirectByteBuffer(), net2Addr) }

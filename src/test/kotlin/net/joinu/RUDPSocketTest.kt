@@ -39,19 +39,10 @@ class RUDPSocketTest {
                 buffer.get(bytes)
 
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                assert(bytes.contentEquals(net2Content)) {
-                    "Content is invalid \n${bytes.joinToString {
-                        String.format(
-                            "%02X",
-                            it
-                        )
-                    }} \n${net2Content.joinToString { String.format("%02X", it) }}"
-                }
-
-                // TODO: fix invalid data
+                assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
                 val after = System.currentTimeMillis()
-                println("2->1 Transmission of 200 kb took ${after - before} ms locally")
+                println("2->1 Transmission of 100 kb took ${after - before} ms locally")
 
                 rudp1.close()
             }
@@ -64,7 +55,7 @@ class RUDPSocketTest {
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
 
                 val after = System.currentTimeMillis()
-                println("1->2 Transmission of 200 kb took ${after - before} ms locally")
+                println("1->2 Transmission of 100 kb took ${after - before} ms locally")
 
                 rudp2.close()
             }

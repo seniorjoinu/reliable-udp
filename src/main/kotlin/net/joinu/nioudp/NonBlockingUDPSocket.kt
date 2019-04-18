@@ -106,7 +106,7 @@ class NonBlockingUDPSocket(
 
                 logger.trace { "Received data packet from $from, invoking onMessage handler" }
 
-                launch(Dispatchers.Default) {
+                launch {
                     onMessageHandler?.invoke(data, from)
                 }
             }
