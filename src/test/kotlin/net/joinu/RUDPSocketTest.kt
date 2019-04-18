@@ -1,11 +1,10 @@
 package net.joinu
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.ConfigurableRUDPSocket
-import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.RepeatedTest
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
@@ -16,7 +15,7 @@ class RUDPSocketTest {
         //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
-    @Test
+    @RepeatedTest(100)
     fun `single send-receive works fine`() {
         runBlocking {
             val before = System.currentTimeMillis()
@@ -40,15 +39,21 @@ class RUDPSocketTest {
                 buffer.get(bytes)
 
                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
+                assert(bytes.contentEquals(net2Content)) {
+                    "Content is invalid \n${bytes.joinToString {
+                        String.format(
+                            "%02X",
+                            it
+                        )
+                    }} \n${net2Content.joinToString { String.format("%02X", it) }}"
+                }
 
                 // TODO: fix invalid data
 
                 val after = System.currentTimeMillis()
-                println("Transmission of 200kb took ${after - before} ms locally")
+                println("2->1 Transmission of 200 kb took ${after - before} ms locally")
 
                 rudp1.close()
-                rudp2.close()
             }
 
             rudp2.onMessage { buffer, from ->
@@ -57,22 +62,29 @@ class RUDPSocketTest {
 
                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
+
+                val after = System.currentTimeMillis()
+                println("1->2 Transmission of 200 kb took ${after - before} ms locally")
+
+                rudp2.close()
             }
 
-            delay(100)
-
-            rudp1.send(
-                net1Content.toDirectByteBuffer(),
-                net2Addr,
-                fctTimeoutMsProvider = { 50 },
-                windowSizeProvider = { 1400 }
-            )
-            rudp2.send(
-                net2Content.toDirectByteBuffer(),
-                net1Addr,
-                fctTimeoutMsProvider = { 50 },
-                windowSizeProvider = { 1400 }
-            )
+            launch {
+                rudp1.send(
+                    net1Content.toDirectByteBuffer(),
+                    net2Addr,
+                    fctTimeoutMsProvider = { 50 },
+                    windowSizeProvider = { 1400 }
+                )
+            }
+            launch {
+                rudp2.send(
+                    net2Content.toDirectByteBuffer(),
+                    net1Addr,
+                    fctTimeoutMsProvider = { 50 },
+                    windowSizeProvider = { 1400 }
+                )
+            }
         }
     }
 }

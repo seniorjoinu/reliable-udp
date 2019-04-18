@@ -3,7 +3,7 @@ package net.joinu.nioudp
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
-typealias NetworkMessageHandler = (buffer: ByteBuffer, from: InetSocketAddress) -> Unit
+typealias NetworkMessageHandler = suspend (buffer: ByteBuffer, from: InetSocketAddress) -> Unit
 
 enum class SocketState {
     UNBOUND, BOUND, CLOSED

@@ -2,14 +2,19 @@ package net.joinu
 
 import kotlinx.coroutines.*
 import net.joinu.nioudp.NonBlockingUDPSocket
-import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.assertThrows
 import java.net.InetSocketAddress
 import java.util.*
 
 
 class NonBlockingUdpTest {
-    @Test
+    init {
+        //System.setProperty("jna.debug_load", "true")
+        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+    }
+
+    @RepeatedTest(100)
     fun `send and receive work fine`() {
         runBlocking {
             val before = System.currentTimeMillis()
@@ -50,10 +55,8 @@ class NonBlockingUdpTest {
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
             }
 
-            delay(100)
-
-            udp1.send(net1Content.toDirectByteBuffer(), net2Addr)
-            udp2.send(net2Content.toDirectByteBuffer(), net1Addr)
+            launch { udp1.send(net1Content.toDirectByteBuffer(), net2Addr) }
+            launch { udp2.send(net2Content.toDirectByteBuffer(), net1Addr) }
         }
 
         println("end of test")

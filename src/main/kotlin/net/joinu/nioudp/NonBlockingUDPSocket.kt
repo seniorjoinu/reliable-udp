@@ -1,30 +1,40 @@
 package net.joinu.nioudp
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import mu.KotlinLogging
-import java.io.Closeable
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
+import kotlin.coroutines.CoroutineContext
 
 
-interface NioSocket : Closeable {
-    fun bind(address: InetSocketAddress)
-    fun listen()
-    fun send(data: ByteBuffer, to: InetSocketAddress)
+interface NioSocket {
+    suspend fun bind(address: InetSocketAddress)
+    suspend fun listen()
+    suspend fun send(data: ByteBuffer, to: InetSocketAddress)
     fun onMessage(handler: NetworkMessageHandler)
     fun getSocketState(): SocketState
+    suspend fun close()
 }
 
-open class NonBlockingUDPSocket : NioSocket {
+class NonBlockingUDPSocket(
+    override val coroutineContext: CoroutineContext = Dispatchers.IO
+) : NioSocket, CoroutineScope {
 
     private val logger = KotlinLogging.logger("NonBlockingUDPSocket-${Random().nextInt()}")
 
-    // TODO: add lock to channel
     lateinit var channel: DatagramChannel
+    private val channelMutex = Mutex()
+
     var onMessageHandler: NetworkMessageHandler? = null
 
-    protected var state = SocketState.UNBOUND
+    private var state = SocketState.UNBOUND
 
     override fun getSocketState() = state
     fun isBound(): Boolean = state == SocketState.BOUND
@@ -36,33 +46,37 @@ open class NonBlockingUDPSocket : NioSocket {
         logger.trace { "onMessage handler set" }
     }
 
-    override fun bind(address: InetSocketAddress) {
-        channel = DatagramChannel.open()
-        channel.configureBlocking(false)
-        channel.bind(address)
+    override suspend fun bind(address: InetSocketAddress) {
+        channelMutex.withLock {
+            channel = DatagramChannel.open()
+            channel.configureBlocking(false)
+            channel.bind(address)
 
-        state = SocketState.BOUND
+            state = SocketState.BOUND
 
-        logger.trace { "Address $address bound" }
+            logger.trace { "Address $address bound" }
+        }
     }
 
-    override fun close() {
-        channel.close()
+    override suspend fun close() {
+        channelMutex.withLock {
+            channel.close()
 
-        state = SocketState.CLOSED
+            state = SocketState.CLOSED
 
-        logger.trace { "Socket closed" }
+            logger.trace { "Socket closed" }
+        }
     }
 
-    protected fun throwIfNotBound() {
+    private fun throwIfNotBound() {
         if (!isBound()) error("NonBlockingUDPSocket is not bound yet.")
     }
 
-    protected fun throwIfClosed() {
+    private fun throwIfClosed() {
         if (isClosed()) error("NonBlockingUDPSocket is already closed.")
     }
 
-    override fun listen() {
+    override suspend fun listen() {
         throwIfNotBound()
         throwIfClosed()
 
@@ -70,36 +84,45 @@ open class NonBlockingUDPSocket : NioSocket {
 
         logger.trace { "Listening" }
 
-        while (!isClosed()) {
-            val remoteAddress = channel.receive(buf)
+        supervisorScope {
+            while (!isClosed()) {
+                val remoteAddress = channelMutex.withLock {
+                    if (channel.isOpen) channel.receive(buf)
+                    else null
+                }
 
-            if (buf.position() == 0) continue
-            val size = buf.position()
+                if (buf.position() == 0) continue
+                val size = buf.position()
 
-            buf.flip()
+                buf.flip()
 
-            val data = ByteBuffer.allocateDirect(size)
-            data.put(buf)
-            data.flip()
+                val data = ByteBuffer.allocateDirect(size)
+                data.put(buf)
+                data.flip()
 
-            buf.clear()
+                buf.clear()
 
-            val from = InetSocketAddress::class.java.cast(remoteAddress)
+                val from = InetSocketAddress::class.java.cast(remoteAddress)
 
-            logger.trace { "Received data packet from $from, invoking onMessage handler" }
+                logger.trace { "Received data packet from $from, invoking onMessage handler" }
 
-            onMessageHandler?.invoke(data, from)
+                launch(Dispatchers.Default) {
+                    onMessageHandler?.invoke(data, from)
+                }
+            }
         }
     }
 
-    override fun send(data: ByteBuffer, to: InetSocketAddress) {
+    override suspend fun send(data: ByteBuffer, to: InetSocketAddress) {
         throwIfNotBound()
         throwIfClosed()
 
         require(data.limit() <= MAX_CHUNK_SIZE_BYTES) { "Size of data should be LEQ than $MAX_CHUNK_SIZE_BYTES bytes" }
 
-        logger.trace { "Sending $data to $to" }
+        channelMutex.withLock {
+            logger.trace { "Sending $data to $to" }
 
-        channel.send(data, to)
+            channel.send(data, to)
+        }
     }
 }
