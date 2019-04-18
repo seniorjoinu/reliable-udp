@@ -19,10 +19,10 @@ class NonBlockingUdpTest {
             val net1Content = ByteArray(10000) { it.toByte() }
             val net2Content = ByteArray(10000) { (10000 - it).toByte() }
 
-            val udp1 = NonBlockingUDPSocket(10001)
+            val udp1 = NonBlockingUDPSocket()
             udp1.bind(net1Addr)
 
-            val udp2 = NonBlockingUDPSocket(10001)
+            val udp2 = NonBlockingUDPSocket()
             udp2.bind(net2Addr)
 
             launch(Dispatchers.IO) { udp1.listen() }
@@ -67,7 +67,7 @@ class NonBlockingUdpTest {
             withTimeoutOrNull(timeoutMs) {
                 resultCount = packetCount
                 val net1Addr = InetSocketAddress("localhost", 1337)
-                val udp1 = NonBlockingUDPSocket(packetSizeBytes + 1)
+                val udp1 = NonBlockingUDPSocket()
                 udp1.bind(net1Addr)
 
                 launch(Dispatchers.IO) {

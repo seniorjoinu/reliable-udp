@@ -23,13 +23,13 @@ class RUDPSocketTest {
 
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(10000) { it.toByte() }
-            val net2Content = ByteArray(10000) { (10000 - it).toByte() }
+            val net1Content = ByteArray(100000) { it.toByte() }
+            val net2Content = ByteArray(100000) { (100000 - it).toByte() }
 
-            val rudp1 = ConfigurableRUDPSocket()
+            val rudp1 = ConfigurableRUDPSocket(1400)
             rudp1.bind(net1Addr)
 
-            val rudp2 = ConfigurableRUDPSocket()
+            val rudp2 = ConfigurableRUDPSocket(1400)
             rudp2.bind(net2Addr)
 
             launch(Dispatchers.IO) { rudp1.listen() }
@@ -45,7 +45,7 @@ class RUDPSocketTest {
                 // TODO: fix invalid data
 
                 val after = System.currentTimeMillis()
-                println("Transmission of 20kb took ${after - before} ms locally")
+                println("Transmission of 200kb took ${after - before} ms locally")
 
                 rudp1.close()
                 rudp2.close()
@@ -65,12 +65,14 @@ class RUDPSocketTest {
                 net1Content.toDirectByteBuffer(),
                 net2Addr,
                 fctTimeoutMsProvider = { 50 },
-                windowSizeProvider = { 1400 })
+                windowSizeProvider = { 1400 }
+            )
             rudp2.send(
                 net2Content.toDirectByteBuffer(),
                 net1Addr,
                 fctTimeoutMsProvider = { 50 },
-                windowSizeProvider = { 1400 })
+                windowSizeProvider = { 1400 }
+            )
         }
     }
 }

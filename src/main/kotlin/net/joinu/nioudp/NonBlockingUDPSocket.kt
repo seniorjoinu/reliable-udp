@@ -16,17 +16,9 @@ interface NioSocket : Closeable {
     fun getSocketState(): SocketState
 }
 
-open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES) : NioSocket {
+open class NonBlockingUDPSocket : NioSocket {
 
     private val logger = KotlinLogging.logger("NonBlockingUDPSocket-${Random().nextInt()}")
-
-    init {
-        require(chunkSizeBytes <= MAX_CHUNK_SIZE_BYTES) {
-            "Maximum chunk size limit reached (provided: $chunkSizeBytes, limit: $MAX_CHUNK_SIZE_BYTES)"
-        }
-    }
-
-    val actualChunkSizeBytes = chunkSizeBytes + DATA_SIZE_BYTES
 
     // TODO: add lock to channel
     lateinit var channel: DatagramChannel
@@ -74,7 +66,7 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         throwIfNotBound()
         throwIfClosed()
 
-        val buf = ByteBuffer.allocateDirect(actualChunkSizeBytes)
+        val buf = ByteBuffer.allocateDirect(MAX_CHUNK_SIZE_BYTES)
 
         logger.trace { "Listening" }
 
@@ -82,11 +74,11 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
             val remoteAddress = channel.receive(buf)
 
             if (buf.position() == 0) continue
+            val size = buf.position()
 
             buf.flip()
-            val size = buf.int
+
             val data = ByteBuffer.allocateDirect(size)
-            buf.limit(size + Int.SIZE_BYTES)
             data.put(buf)
             data.flip()
 
@@ -104,16 +96,10 @@ open class NonBlockingUDPSocket(val chunkSizeBytes: Int = RECOMMENDED_CHUNK_SIZE
         throwIfNotBound()
         throwIfClosed()
 
-        require(data.limit() <= chunkSizeBytes) { "Size of data should be LEQ than $chunkSizeBytes bytes" }
+        require(data.limit() <= MAX_CHUNK_SIZE_BYTES) { "Size of data should be LEQ than $MAX_CHUNK_SIZE_BYTES bytes" }
 
-        val wrappedData = ByteBuffer.allocateDirect(actualChunkSizeBytes)
+        logger.trace { "Sending $data to $to" }
 
-        wrappedData.putInt(data.limit())
-        wrappedData.put(data)
-        wrappedData.flip()
-
-        logger.trace { "Sending $wrappedData to $to" }
-
-        channel.send(wrappedData, to)
+        channel.send(data, to)
     }
 }

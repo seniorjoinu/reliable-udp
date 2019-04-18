@@ -3,7 +3,6 @@ package net.joinu.rudp
 import mu.KotlinLogging
 import net.joinu.nioudp.NetworkMessageHandler
 import net.joinu.nioudp.NonBlockingUDPSocket
-import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.wirehair.Wirehair
 import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
@@ -13,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListSet
 
 
-class ConfigurableRUDPSocket {
+class ConfigurableRUDPSocket(val mtu: Int) {
     companion object {
         init {
             Wirehair.init()
@@ -22,10 +21,13 @@ class ConfigurableRUDPSocket {
 
     private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
 
-    val socket = NonBlockingUDPSocket(RECOMMENDED_CHUNK_SIZE_BYTES + RepairBlock.METADATA_SIZE_BYTES)
-    val connections = ConcurrentHashMap<InetSocketAddress, RUDPConnection>()
+    val socket = NonBlockingUDPSocket()
+    val decoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Wirehair.Decoder>>()
+    val encoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Wirehair.Encoder>>()
+    // TODO: clean up acks eventually
+    val acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
     var onMessageHandler: NetworkMessageHandler? = null
-    var acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
+    val repairBlockSizeBytes = mtu - RepairBlock.METADATA_SIZE_BYTES
 
     fun listen() {
         socket.onMessage { bytes, from ->
@@ -44,15 +46,13 @@ class ConfigurableRUDPSocket {
 
                     logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
-                    val connection = connections.getOrPut(from) { RUDPConnection(from) }
-
                     if (acks[from]?.contains(block.threadId) == true) {
                         logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
                         sendACK(block.threadId, from)
                         return@onMessage
                     }
 
-                    val decoder = connection.decoders.getOrPut(block.threadId) {
+                    val decoder = decoders.getOrPut(from) { ConcurrentHashMap() }.getOrPut(block.threadId) {
                         Wirehair.Decoder(block.messageBytes, block.blockBytes)
                     }
 
@@ -66,7 +66,7 @@ class ConfigurableRUDPSocket {
                     decoder.recover(message as DirectBuffer, block.messageBytes)
 
                     decoder.close()
-                    connections[from]?.decoders?.remove(block.threadId)
+                    decoders[from]?.remove(block.threadId)
 
                     onMessageHandler?.invoke(message, from)
                 }
@@ -80,7 +80,6 @@ class ConfigurableRUDPSocket {
     fun send(
         data: ByteBuffer,
         to: InetSocketAddress,
-        repairBlockSizeBytes: Int = RECOMMENDED_CHUNK_SIZE_BYTES,
         trtTimeoutMs: Long = 15000,
         fctTimeoutMsProvider: () -> Long,
         windowSizeProvider: () -> Int
@@ -89,8 +88,7 @@ class ConfigurableRUDPSocket {
 
         logger.trace { "Transmission for threadId: $threadId is started" }
 
-        val connection = connections.getOrPut(to) { RUDPConnection(to) }
-        val encoder = connection.encoders.getOrPut(threadId) {
+        val encoder = encoders.getOrPut(to) { ConcurrentHashMap() }.getOrPut(threadId) {
             val buffer = ByteBuffer.allocateDirect(data.limit())
             buffer.put(data)
             buffer.flip()
@@ -175,7 +173,7 @@ class ConfigurableRUDPSocket {
         logger.trace { "Transmission of threadId: $threadId is finished, cleaning up..." }
 
         encoder.close()
-        connections[to]?.encoders?.remove(threadId)
+        encoders[to]?.remove(threadId)
     }
 
     private fun ackReceived(from: InetSocketAddress, threadId: Long) = acks[from]?.contains(threadId) == true
