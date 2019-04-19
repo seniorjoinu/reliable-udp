@@ -59,8 +59,12 @@ class NonBlockingUdpTest {
                 udp2.close()
             }
 
-            launch { udp1.send(net1Content.toDirectByteBuffer(), net2Addr) }
-            launch { udp2.send(net2Content.toDirectByteBuffer(), net1Addr) }
+            launch {
+                udp1.send(net1Content.toDirectByteBuffer(), net2Addr)
+            }
+            launch {
+                udp2.send(net2Content.toDirectByteBuffer(), net1Addr)
+            }
         }
 
         println("end of test")

@@ -17,27 +17,41 @@ class RUDPSocketTest {
     }
 
     @RepeatedTest(100)
-    fun `single send-receive works fine`() {
+    fun `single send-receive works fine with big data`() {
+        `single send-receive works fine`(500000, 1400)
+    }
+
+    @RepeatedTest(100)
+    fun `single send-receive works fine with small data`() {
+        `single send-receive works fine`(10, 100)
+    }
+
+    fun `single send-receive works fine`(dataSize: Int, mtu: Int) {
         runBlocking {
             val before = System.currentTimeMillis()
 
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(100000) { it.toByte() }
-            val net2Content = ByteArray(100000) { (100000 - it).toByte() }
+            val net1Content = ByteArray(dataSize) { it.toByte() }
+            val net2Content = ByteArray(dataSize) { (100000 - it).toByte() }
 
-            val mtuBytes = 1400
-
-            val rudp1 = ConfigurableRUDPSocket(mtuBytes)
+            val rudp1 = ConfigurableRUDPSocket(mtu)
             rudp1.bind(net1Addr)
 
-            val rudp2 = ConfigurableRUDPSocket(mtuBytes)
+            val rudp2 = ConfigurableRUDPSocket(mtu)
             rudp2.bind(net2Addr)
 
-            launch(Dispatchers.IO) { rudp1.listen() }
-            launch(Dispatchers.IO) { rudp2.listen() }
+            launch(Dispatchers.IO) {
+                rudp1.listen()
+            }
+            launch(Dispatchers.IO) {
+                rudp2.listen()
+            }
 
-            delay(100)
+            var sent1 = false
+            var receive1 = false
+            var sent2 = false
+            var receive2 = false
 
             rudp1.onMessage { buffer, from ->
                 val bytes = ByteArray(buffer.limit())
@@ -49,7 +63,7 @@ class RUDPSocketTest {
                 val after = System.currentTimeMillis()
                 println("2->1 Transmission of 100 kb took ${after - before} ms locally")
 
-                rudp1.close()
+                receive1 = true
             }
 
             rudp2.onMessage { buffer, from ->
@@ -62,7 +76,7 @@ class RUDPSocketTest {
                 val after = System.currentTimeMillis()
                 println("1->2 Transmission of 100 kb took ${after - before} ms locally")
 
-                rudp2.close()
+                receive2 = true
             }
 
             launch {
@@ -70,16 +84,29 @@ class RUDPSocketTest {
                     net1Content.toDirectByteBuffer(),
                     net2Addr,
                     fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { mtuBytes * 2 }
+                    windowSizeProvider = { mtu * 2 }
                 )
+                sent1 = true
             }
             launch {
                 rudp2.send(
                     net2Content.toDirectByteBuffer(),
                     net1Addr,
                     fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { mtuBytes * 2 }
+                    windowSizeProvider = { mtu * 2 }
                 )
+                sent2 = true
+            }
+
+            while (true) {
+                if (sent1 && sent2 && receive1 && receive2) {
+                    delay(100)
+
+                    rudp1.close()
+                    rudp2.close()
+                    break
+                }
+                delay(10)
             }
         }
     }

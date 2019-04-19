@@ -2,8 +2,6 @@ package net.joinu.nioudp
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import mu.KotlinLogging
@@ -37,7 +35,6 @@ class NonBlockingUDPSocket(
     private var state = SocketState.UNBOUND
 
     override fun getSocketState() = state
-    fun isBound(): Boolean = state == SocketState.BOUND
     fun isClosed(): Boolean = state == SocketState.CLOSED
 
     override fun onMessage(handler: NetworkMessageHandler) {
@@ -48,6 +45,8 @@ class NonBlockingUDPSocket(
 
     override suspend fun bind(address: InetSocketAddress) {
         channelMutex.withLock {
+            throwIfNotUnbound()
+
             channel = DatagramChannel.open()
             channel.configureBlocking(false)
             channel.bind(address)
@@ -60,6 +59,9 @@ class NonBlockingUDPSocket(
 
     override suspend fun close() {
         channelMutex.withLock {
+            throwIfClosed()
+            throwIfUnbound()
+
             channel.close()
 
             state = SocketState.CLOSED
@@ -68,53 +70,52 @@ class NonBlockingUDPSocket(
         }
     }
 
-    private fun throwIfNotBound() {
-        if (!isBound()) error("NonBlockingUDPSocket is not bound yet.")
-    }
-
     private fun throwIfClosed() {
         if (isClosed()) error("NonBlockingUDPSocket is already closed.")
     }
 
+    private fun throwIfNotUnbound() {
+        if (getSocketState() != SocketState.UNBOUND) error("NonBlockingUDPSocket is not UNBOUND")
+    }
+
+    private fun throwIfUnbound() {
+        if (getSocketState() == SocketState.UNBOUND) error("NonBlockingUDPSocket is UNBOUND")
+    }
+
     override suspend fun listen() {
-        throwIfNotBound()
         throwIfClosed()
 
         val buf = ByteBuffer.allocateDirect(MAX_CHUNK_SIZE_BYTES)
 
         logger.trace { "Listening" }
+        state = SocketState.LISTENING
 
-        supervisorScope {
-            while (!isClosed()) {
-                val remoteAddress = channelMutex.withLock {
-                    if (channel.isOpen) channel.receive(buf)
-                    else null
-                }
-
-                if (buf.position() == 0) continue
-                val size = buf.position()
-
-                buf.flip()
-
-                val data = ByteBuffer.allocateDirect(size)
-                data.put(buf)
-                data.flip()
-
-                buf.clear()
-
-                val from = InetSocketAddress::class.java.cast(remoteAddress)
-
-                logger.trace { "Received data packet from $from, invoking onMessage handler" }
-
-                launch {
-                    onMessageHandler?.invoke(data, from)
-                }
+        while (!isClosed()) {
+            val remoteAddress = channelMutex.withLock {
+                if (channel.isOpen) channel.receive(buf)
+                else null
             }
+
+            if (buf.position() == 0) continue
+            val size = buf.position()
+
+            buf.flip()
+
+            val data = ByteBuffer.allocateDirect(size)
+            data.put(buf)
+            data.flip()
+
+            buf.clear()
+
+            val from = InetSocketAddress::class.java.cast(remoteAddress)
+
+            logger.trace { "Received data packet from $from, invoking onMessage handler" }
+
+            onMessageHandler?.invoke(data, from)
         }
     }
 
     override suspend fun send(data: ByteBuffer, to: InetSocketAddress) {
-        throwIfNotBound()
         throwIfClosed()
 
         require(data.limit() <= MAX_CHUNK_SIZE_BYTES) { "Size of data should be LEQ than $MAX_CHUNK_SIZE_BYTES bytes" }
