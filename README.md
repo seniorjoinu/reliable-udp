@@ -5,6 +5,16 @@
 Reliable UDP for Kotlin using `Wirehair` fountain codes and coroutines
 
 ### Abstract
+##### Why TCP is bad?
+TCP was designed to provide maximum throughput but not to provide minimum latency:
+1. When packet loss occurs TCP retransmits COMPLETE message again
+2. ARQ RTO is `latency*2` but when packet loss occurs it can become `latency*8`
+
+I also personally do not like TCP design:
+1. It is stream-oriented
+2. It is forcing you to handle these awful `Connection` objects by yourself
+
+So, my goal is to develop nano-latency easy-to-use transport.
 
 ##### What is fec?
 FEC stands for Forward Error Correction - technique that uses erasure codes to recover missed data after transmission.
@@ -22,18 +32,12 @@ you can constantly send your friend repair blocks - they never end. When your fr
 repair chunks, he responds you with just one ACK saying that he completely received your data and you can finish transmission
 from your side.
 
-This repository is my Kotlin implementation of reliable UDP using fountain codes and coroutines.
-
 ##### Best fountain codes
 I surfed github and google a lot, but found only one library that I really like. 
 It called [catid/wirehair](https://github.com/catid/wirehair).
 What I really like about it is it's speed and clear API - Christopher is a really good developer.
 
 I've written a Kotlin wrapper for it [seniorjoinu/wirehair-wrapper](https://github.com/seniorjoinu/wirehair-wrapper)
-
-##### Design
-As you can see this library is called reliable **UDP**. So it designed as regular UDP - you send some data packet to some
-address without connections, streams and other TCP shit.
 
 ### Installation
 1. Make sure you understand how to put `wirehair` binaries into your project correctly - [link](https://github.com/seniorjoinu/wirehair-wrapper#details)
@@ -84,4 +88,4 @@ runBlocking {
 ```
 
 ### Help
-Submit and issue or suggest a PR
+Submit an issue or suggest a PR

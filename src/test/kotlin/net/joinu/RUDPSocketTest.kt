@@ -12,7 +12,7 @@ import java.nio.ByteBuffer
 class RUDPSocketTest {
     init {
         //System.setProperty("jna.debug_load", "true")
-        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
     @RepeatedTest(100)
@@ -25,14 +25,13 @@ class RUDPSocketTest {
             val net1Content = ByteArray(100000) { it.toByte() }
             val net2Content = ByteArray(100000) { (100000 - it).toByte() }
 
-            val rudp1 = ConfigurableRUDPSocket(1400)
-            rudp1.bind(net1Addr)
+            val mtuBytes = 1400
 
-            val rudp2 = ConfigurableRUDPSocket(1400)
-            rudp2.bind(net2Addr)
+            val rudp1 = ConfigurableRUDPSocket(mtuBytes)
+            val rudp2 = ConfigurableRUDPSocket(mtuBytes)
 
-            launch(Dispatchers.IO) { rudp1.listen() }
-            launch(Dispatchers.IO) { rudp2.listen() }
+            launch(Dispatchers.IO) { rudp1.observe(net1Addr) }
+            launch(Dispatchers.IO) { rudp2.observe(net2Addr) }
 
             rudp1.onMessage { buffer, from ->
                 val bytes = ByteArray(buffer.limit())
@@ -65,7 +64,7 @@ class RUDPSocketTest {
                     net1Content.toDirectByteBuffer(),
                     net2Addr,
                     fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { 1400 }
+                    windowSizeProvider = { mtuBytes * 2 }
                 )
             }
             launch {
@@ -73,7 +72,7 @@ class RUDPSocketTest {
                     net2Content.toDirectByteBuffer(),
                     net1Addr,
                     fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { 1400 }
+                    windowSizeProvider = { mtuBytes * 2 }
                 )
             }
         }
