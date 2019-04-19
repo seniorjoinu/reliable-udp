@@ -263,6 +263,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
                         sendACK(block.threadId, from)
 
+                        logger.trace { "Invoking onMessage handler" }
                         onMessageHandler?.invoke(message, from)
                     }
 
