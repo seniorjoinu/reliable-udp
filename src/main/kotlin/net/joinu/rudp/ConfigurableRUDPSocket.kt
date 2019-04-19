@@ -185,8 +185,12 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
     fun getSocketState() = state
 
+    /**
+     * Closes this socket - after this you should create another one to work with
+     */
     suspend fun close() {
         stateMutex.withLock {
+            throwIfNew()
             throwIfClosed()
 
             socket.close()
@@ -335,20 +339,24 @@ class ConfigurableRUDPSocket(mtu: Int) {
         socket.send(buffer, to)
     }
 
+    private fun throwIfNew() {
+        if (state == RUDPSocketState.NEW) error("RUDPSocket is in NEW state")
+    }
+
     private fun throwIfClosed() {
-        if (state == RUDPSocketState.CLOSED) error("RUDPSocket is closed")
+        if (state == RUDPSocketState.CLOSED) error("RUDPSocket is in CLOSED state")
     }
 
     private fun throwIfNotBound() {
-        if (state != RUDPSocketState.BOUND) error("RUDPSocket is not bound")
+        if (state != RUDPSocketState.BOUND) error("RUDPSocket is not in BOUND state")
     }
 
     private fun throwIfNotListening() {
-        if (state != RUDPSocketState.LISTENING) error("RUDPSocket is not listening")
+        if (state != RUDPSocketState.LISTENING) error("RUDPSocket is not in LISTENING state")
     }
 
     private fun throwIfNotNew() {
-        if (state != RUDPSocketState.NEW) error("RUDPSocket is not new")
+        if (state != RUDPSocketState.NEW) error("RUDPSocket is not in NEW state")
     }
 }
 
