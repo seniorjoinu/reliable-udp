@@ -1,6 +1,7 @@
 package net.joinu
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.ConfigurableRUDPSocket
@@ -28,10 +29,15 @@ class RUDPSocketTest {
             val mtuBytes = 1400
 
             val rudp1 = ConfigurableRUDPSocket(mtuBytes)
-            val rudp2 = ConfigurableRUDPSocket(mtuBytes)
+            rudp1.bind(net1Addr)
 
-            launch(Dispatchers.IO) { rudp1.observe(net1Addr) }
-            launch(Dispatchers.IO) { rudp2.observe(net2Addr) }
+            val rudp2 = ConfigurableRUDPSocket(mtuBytes)
+            rudp2.bind(net2Addr)
+
+            launch(Dispatchers.IO) { rudp1.listen() }
+            launch(Dispatchers.IO) { rudp2.listen() }
+
+            delay(100)
 
             rudp1.onMessage { buffer, from ->
                 val bytes = ByteArray(buffer.limit())

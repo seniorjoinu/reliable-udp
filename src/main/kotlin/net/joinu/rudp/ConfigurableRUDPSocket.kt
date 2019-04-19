@@ -2,6 +2,7 @@ package net.joinu.rudp
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import mu.KotlinLogging
 import net.joinu.nioudp.NetworkMessageHandler
@@ -28,6 +29,9 @@ class ConfigurableRUDPSocket(mtu: Int) {
     }
 
     private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
+
+    var state = RUDPSocketState.NEW
+    val stateMutex = Mutex()
 
     val socket = NonBlockingUDPSocket()
 
@@ -67,6 +71,8 @@ class ConfigurableRUDPSocket(mtu: Int) {
         fctTimeoutMsProvider: () -> Long,
         windowSizeProvider: () -> Int
     ) {
+        throwIfNotListening()
+
         val threadId = Random().nextLong()
 
         logger.trace { "Transmission for threadId: $threadId is started" }
@@ -167,26 +173,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
     }
 
     /**
-     * Bind to some local address and listen to incoming messages
-     *
-     * We're listening to incoming UDP packets. When packet type is ACK we put it in ACKs collection, when packet type is
-     *  REPAIR we check if we already sent some ACK for this message: if yes - sent ACK one more time. Then we add new
-     *  repair block to the decoder and try to recover the original message. If recovery succeeds we send ACK and execute
-     *  onMessage handler.
-     *
-     * WARNING: onMessage handler executes on IO dispatcher by default, so make sure you do all computational stuff on
-     *  another dispatcher.
-     *
-     * @param address [InetSocketAddress] - local address to bind to
-     *
-     * @throws [net.joinu.wirehair.WirehairException]
-     */
-    suspend fun observe(address: InetSocketAddress) {
-        bind(address)
-        listen()
-    }
-
-    /**
      * Set message handler
      *
      * @param handler [NetworkMessageHandler] - lambda which will be executed when we receive some message
@@ -197,70 +183,108 @@ class ConfigurableRUDPSocket(mtu: Int) {
         onMessageHandler = handler
     }
 
-    fun getSocketState() = socket.getSocketState()
+    fun getSocketState() = state
 
-    suspend fun close() = socket.close()
+    suspend fun close() {
+        stateMutex.withLock {
+            throwIfClosed()
 
-    private suspend fun bind(address: InetSocketAddress) = socket.bind(address)
+            socket.close()
+            state = RUDPSocketState.CLOSED
+        }
+    }
 
-    private suspend fun listen() {
-        socket.onMessage { bytes, from ->
-            val flag = parseFlag(bytes)
+    /**
+     * Binds to some local address
+     *
+     * @param address [InetSocketAddress] - local address to bind to
+     */
+    suspend fun bind(address: InetSocketAddress) {
+        stateMutex.withLock {
+            throwIfNotNew()
 
-            when (flag) {
-                Flags.ACK -> {
-                    val ack = parseACK(bytes)
+            socket.bind(address)
+            state = RUDPSocketState.BOUND
+        }
+    }
 
-                    // TODO: handle acks received after transmission end but prevent new blocks of already received transmission to count like a new transmission
+    /**
+     * Listens to incoming messages
+     *
+     * We're listening to incoming UDP packets. When packet type is ACK we put it in ACKs collection, when packet type is
+     *  REPAIR we check if we already sent some ACK for this message: if yes - sent ACK one more time. Then we add new
+     *  repair block to the decoder and try to recover the original message. If recovery succeeds we send ACK and execute
+     *  onMessage handler.
+     *
+     * WARNING: onMessage handler executes on IO dispatcher by default, so make sure you do all computational stuff on
+     *  another dispatcher.
+     *
+     * @throws [net.joinu.wirehair.WirehairException]
+     */
+    suspend fun listen() {
+        stateMutex.withLock {
+            throwIfNotBound()
 
-                    logger.trace { "Received ACK message for threadId: $ack from: $from" }
+            socket.onMessage { bytes, from ->
+                val flag = parseFlag(bytes)
 
-                    putACK(from, ack)
-                }
-                Flags.REPAIR -> {
-                    val block = parseRepairBlock(bytes)
+                when (flag) {
+                    Flags.ACK -> {
+                        val ack = parseACK(bytes)
 
-                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
+                        // TODO: handle acks received after transmission end but prevent new blocks of already received transmission to count like a new transmission
 
-                    if (ackReceived(from, block.threadId)) {
-                        logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
-                        sendACK(block.threadId, from)
-                        return@onMessage
+                        logger.trace { "Received ACK message for threadId: $ack from: $from" }
+
+                        putACK(from, ack)
                     }
+                    Flags.REPAIR -> {
+                        val block = parseRepairBlock(bytes)
 
-                    val (decoder, decoderMutex) = getDecoderAndMutex(from, block)
+                        logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
-                    decoderMutex.lock()
-
-                    if (decoders[from]?.containsKey(block.threadId) == true) {
-                        val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
-
-                        if (!enough) {
-                            decoderMutex.unlock()
+                        if (ackReceived(from, block.threadId)) {
+                            logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
+                            sendACK(block.threadId, from)
                             return@onMessage
                         }
 
-                        val message = ByteBuffer.allocateDirect(block.messageBytes)
-                        decoder.recover(message as DirectBuffer, block.messageBytes)
+                        val (decoder, decoderMutex) = getDecoderAndMutex(from, block)
 
-                        // TODO: put ack somewhere else, because it's incorrect
-                        putACK(from, block.threadId)
+                        decoderMutex.lock()
 
-                        decoder.close()
-                        decoders[from]?.remove(block.threadId)
+                        if (decoders[from]?.containsKey(block.threadId) == true) {
+                            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
 
-                        decoderMutex.unlock()
+                            if (!enough) {
+                                decoderMutex.unlock()
+                                return@onMessage
+                            }
 
-                        sendACK(block.threadId, from)
+                            val message = ByteBuffer.allocateDirect(block.messageBytes)
+                            decoder.recover(message as DirectBuffer, block.messageBytes)
 
-                        onMessageHandler?.invoke(message, from)
+                            // TODO: put ack somewhere else, because it's incorrect
+                            //putACK(from, block.threadId)
+
+                            decoder.close()
+                            decoders[from]?.remove(block.threadId)
+
+                            decoderMutex.unlock()
+
+                            sendACK(block.threadId, from)
+
+                            onMessageHandler?.invoke(message, from)
+                        }
+
+                        if (decoderMutex.isLocked)
+                            decoderMutex.unlock()
                     }
-
-                    if (decoderMutex.isLocked)
-                        decoderMutex.unlock()
+                    else -> logger.error { "Received invalid type of message" }
                 }
-                else -> logger.error { "Received invalid type of message" }
             }
+
+            state = RUDPSocketState.LISTENING
         }
 
         socket.listen()
@@ -309,6 +333,22 @@ class ConfigurableRUDPSocket(mtu: Int) {
         buffer.flip()
 
         socket.send(buffer, to)
+    }
+
+    private fun throwIfClosed() {
+        if (state == RUDPSocketState.CLOSED) error("RUDPSocket is closed")
+    }
+
+    private fun throwIfNotBound() {
+        if (state != RUDPSocketState.BOUND) error("RUDPSocket is not bound")
+    }
+
+    private fun throwIfNotListening() {
+        if (state != RUDPSocketState.LISTENING) error("RUDPSocket is not listening")
+    }
+
+    private fun throwIfNotNew() {
+        if (state != RUDPSocketState.NEW) error("RUDPSocket is not new")
     }
 }
 
@@ -364,4 +404,11 @@ data class RepairBlock(
 
         return buffer
     }
+}
+
+object RUDPSocketState {
+    const val NEW = 0
+    const val BOUND = 1
+    const val LISTENING = 2
+    const val CLOSED = 3
 }
