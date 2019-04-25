@@ -43,6 +43,7 @@ class RUDPSocketTest {
             launch(Dispatchers.IO) {
                 rudp1.listen()
             }
+
             launch(Dispatchers.IO) {
                 rudp2.listen()
             }
@@ -56,7 +57,7 @@ class RUDPSocketTest {
 
             var sent1 = 1
             for (i in (0 until n)) {
-                launch {
+                launch(Dispatchers.IO) {
                     rudp1.send(
                         net1Content.toDirectByteBuffer(),
                         net2Addr,
@@ -74,7 +75,7 @@ class RUDPSocketTest {
 
             var sent2 = 1
             for (i in (0 until n)) {
-                launch {
+                launch(Dispatchers.IO) {
                     rudp2.send(
                         net1Content.toDirectByteBuffer(),
                         net1Addr,
