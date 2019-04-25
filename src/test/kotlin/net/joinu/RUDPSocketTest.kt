@@ -43,32 +43,51 @@ class RUDPSocketTest {
             launch(Dispatchers.IO) {
                 rudp1.listen()
             }
+
             launch(Dispatchers.IO) {
                 rudp2.listen()
             }
 
             val n = 100
 
-            var receive = 1
+            var receive1 = 1
             rudp2.onMessage { buffer, from ->
-                receive++
+                receive1++
             }
 
-            var sent = 1
+            var sent1 = 1
             for (i in (0 until n)) {
-                launch {
+                launch(Dispatchers.IO) {
                     rudp1.send(
                         net1Content.toDirectByteBuffer(),
                         net2Addr,
                         fctTimeoutMsProvider = { 50 },
-                        windowSizeProvider = { 1016 }
+                        windowSizeProvider = { 1000 }
                     )
-                    sent++
+                    sent1++
+                }
+            }
+
+            var receive2 = 1
+            rudp1.onMessage { buffer, from ->
+                receive2++
+            }
+
+            var sent2 = 1
+            for (i in (0 until n)) {
+                launch(Dispatchers.IO) {
+                    rudp2.send(
+                        net1Content.toDirectByteBuffer(),
+                        net1Addr,
+                        fctTimeoutMsProvider = { 50 },
+                        windowSizeProvider = { 1000 }
+                    )
+                    sent2++
                 }
             }
 
             while (true) {
-                if (sent >= n && receive >= n) {
+                if (sent1 >= n && receive1 >= n && sent2 >= n && receive2 >= n) {
                     delay(100)
 
                     rudp1.close()
@@ -76,7 +95,7 @@ class RUDPSocketTest {
                     break
                 }
                 delay(1)
-                println("$sent, $receive")
+                println("$sent1, $receive1, $sent2, $receive2")
             }
         }
     }
