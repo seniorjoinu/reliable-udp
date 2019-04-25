@@ -74,7 +74,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
         val trtBefore = System.currentTimeMillis()
 
-        val n = data.limit() / repairBlockSizeBytes + 1
         var blockId = 1
 
         // handle data size less than block size
@@ -82,6 +81,8 @@ class ConfigurableRUDPSocket(mtu: Int) {
             data.limit() / 2
         else
             repairBlockSizeBytes
+
+        val n = data.limit() / blockBytes + 1
 
         // send N repair blocks
         while (blockId <= n) {
@@ -118,7 +119,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
             ackReceived = withTimeoutOrNull(fctTimeout) {
                 while (true) {
                     ackReceived(to, threadId)
-                    delay(10)
+                    delay(1)
                 }
             } != null
 

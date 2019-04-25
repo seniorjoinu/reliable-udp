@@ -6,6 +6,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.ConfigurableRUDPSocket
 import org.junit.jupiter.api.RepeatedTest
+import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
@@ -18,12 +19,66 @@ class RUDPSocketTest {
 
     @RepeatedTest(100)
     fun `single send-receive works fine with big data`() {
-        `single send-receive works fine`(500000, 1400)
+        `single send-receive works fine`(100000, 1400)
     }
 
     @RepeatedTest(100)
     fun `single send-receive works fine with small data`() {
         `single send-receive works fine`(10, 100)
+    }
+
+    @Test
+    fun `multiple concurrent sends work fine`() {
+        runBlocking {
+            val net1Addr = InetSocketAddress("localhost", 1337)
+            val net2Addr = InetSocketAddress("localhost", 1338)
+            val net1Content = ByteArray(50) { it.toByte() }
+
+            val rudp1 = ConfigurableRUDPSocket(508)
+            rudp1.bind(net1Addr)
+
+            val rudp2 = ConfigurableRUDPSocket(508)
+            rudp2.bind(net2Addr)
+
+            launch(Dispatchers.IO) {
+                rudp1.listen()
+            }
+            launch(Dispatchers.IO) {
+                rudp2.listen()
+            }
+
+            val n = 100
+
+            var receive = 1
+            rudp2.onMessage { buffer, from ->
+                receive++
+            }
+
+            var sent = 1
+            for (i in (0 until n)) {
+                launch {
+                    rudp1.send(
+                        net1Content.toDirectByteBuffer(),
+                        net2Addr,
+                        fctTimeoutMsProvider = { 50 },
+                        windowSizeProvider = { 1016 }
+                    )
+                    sent++
+                }
+            }
+
+            while (true) {
+                if (sent >= n && receive >= n) {
+                    delay(100)
+
+                    rudp1.close()
+                    rudp2.close()
+                    break
+                }
+                delay(1)
+                println("$sent, $receive")
+            }
+        }
     }
 
     fun `single send-receive works fine`(dataSize: Int, mtu: Int) {
@@ -106,7 +161,7 @@ class RUDPSocketTest {
                     rudp2.close()
                     break
                 }
-                delay(10)
+                delay(1)
             }
         }
     }
