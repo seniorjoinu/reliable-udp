@@ -112,6 +112,17 @@ class RUDPSocketTest {
     }
 }
 
+fun assertThrows(block: () -> Unit) {
+    var thrown = false
+    try {
+        block()
+    } catch (e: Throwable) {
+        thrown = true
+    }
+
+    assert(thrown)
+}
+
 fun ByteArray.toDirectByteBuffer(): ByteBuffer {
     val buf = ByteBuffer.allocateDirect(this.size)
     buf.put(this)

@@ -2,6 +2,7 @@ package net.joinu.nioudp
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import mu.KotlinLogging
@@ -90,7 +91,14 @@ class NonBlockingUDPSocket(
         logger.trace { "Listening" }
         state = SocketState.LISTENING
 
+        var count = 0
         while (!isClosed()) {
+            count++
+            if (count == 10) {
+                count = 0
+                delay(1)
+            }
+
             val remoteAddress = channelMutex.withLock {
                 if (channel.isOpen) channel.receive(buf)
                 else null
