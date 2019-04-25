@@ -1,14 +1,17 @@
 package net.joinu.nioudp
 
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import mu.KotlinLogging
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
+import java.util.concurrent.Executors
 
 
 interface NioSocket {
@@ -28,6 +31,8 @@ class NonBlockingUDPSocket : NioSocket {
 
     lateinit var channel: DatagramChannel
     private val channelMutex = Mutex()
+
+    private val listenDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     var onMessageHandler: NetworkMessageHandler? = null
 
@@ -82,43 +87,46 @@ class NonBlockingUDPSocket : NioSocket {
     }
 
     override suspend fun listen() {
-        throwIfClosed()
+        withContext(listenDispatcher) {
+            throwIfClosed()
 
-        val buf = ByteBuffer.allocateDirect(MAX_CHUNK_SIZE_BYTES)
+            val buf = ByteBuffer.allocateDirect(MAX_CHUNK_SIZE_BYTES)
 
-        logger.trace { "Listening" }
-        state = SocketState.LISTENING
+            logger.trace { "Listening" }
+            state = SocketState.LISTENING
 
-        supervisorScope {
-            while (!isClosed()) {
-                val remoteAddress = channelMutex.withLock {
-                    if (channel.isOpen) channel.receive(buf)
-                    else null
-                }
+            listenDispatcher
+            supervisorScope {
+                while (!isClosed()) {
+                    val remoteAddress = channelMutex.withLock {
+                        if (channel.isOpen) channel.receive(buf)
+                        else null
+                    }
 
-                if (buf.position() == 0) continue
+                    if (buf.position() == 0) continue
 
-                val size = buf.position()
+                    val size = buf.position()
 
-                buf.flip()
+                    buf.flip()
 
-                // when allocating byte buffer follow the next rule: if data.size < ~1400 bytes - use on heap buffer, else - use off heap buffer
-                val data = if (size < ALLOCATION_THRESHOLD_BYTES)
-                    ByteBuffer.allocate(size)
-                else
-                    ByteBuffer.allocateDirect(size)
+                    // when allocating byte buffer follow the next rule: if data.size < ~1400 bytes - use on heap buffer, else - use off heap buffer
+                    val data = if (size < ALLOCATION_THRESHOLD_BYTES)
+                        ByteBuffer.allocate(size)
+                    else
+                        ByteBuffer.allocateDirect(size)
 
-                data.put(buf)
-                data.flip()
+                    data.put(buf)
+                    data.flip()
 
-                buf.clear()
+                    buf.clear()
 
-                launch {
-                    val from = InetSocketAddress::class.java.cast(remoteAddress)
+                    launch {
+                        val from = InetSocketAddress::class.java.cast(remoteAddress)
 
-                    logger.trace { "Received data packet from $from, invoking onMessage handler" }
+                        logger.trace { "Received data packet from $from, invoking onMessage handler" }
 
-                    onMessageHandler?.invoke(data, from)
+                        onMessageHandler?.invoke(data, from)
+                    }
                 }
             }
         }
