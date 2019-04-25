@@ -60,8 +60,8 @@ class RUDPSocketTest {
                     rudp1.send(
                         net1Content.toDirectByteBuffer(),
                         net2Addr,
-                        fctTimeoutMsProvider = { 50 },
-                        windowSizeProvider = { 1016 }
+                        fctTimeoutMsProvider = { 100 },
+                        windowSizeProvider = { 100 }
                     )
                     sent1++
                 }
@@ -78,8 +78,8 @@ class RUDPSocketTest {
                     rudp2.send(
                         net1Content.toDirectByteBuffer(),
                         net1Addr,
-                        fctTimeoutMsProvider = { 50 },
-                        windowSizeProvider = { 1016 }
+                        fctTimeoutMsProvider = { 100 },
+                        windowSizeProvider = { 100 }
                     )
                     sent2++
                 }

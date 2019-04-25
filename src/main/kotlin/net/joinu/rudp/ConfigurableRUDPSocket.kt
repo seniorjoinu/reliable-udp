@@ -38,6 +38,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
     // TODO: clean up acks eventually
     val acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
+    val received = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
     var onMessageHandler: NetworkMessageHandler? = null
     val repairBlockSizeBytes = mtu - RepairBlock.METADATA_SIZE_BYTES
@@ -233,7 +234,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
                     logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
-                    if (ackReceived(from, block.threadId)) {
+                    if (packetReceived(from, block.threadId)) {
                         logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
                         sendACK(block.threadId, from)
                         return@onMessage
@@ -254,8 +255,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
                         val message = ByteBuffer.allocateDirect(block.messageBytes)
                         decoder.recover(message as DirectBuffer, block.messageBytes)
 
-                        // TODO: put ack somewhere else, because it's incorrect
-                        putACK(from, block.threadId)
+                        markPacketReceived(from, block.threadId)
 
                         decoder.close()
                         decoders[from]?.remove(block.threadId)
@@ -302,6 +302,10 @@ class ConfigurableRUDPSocket(mtu: Int) {
     private fun ackReceived(from: InetSocketAddress, threadId: Long) = acks[from]?.contains(threadId) == true
     private fun putACK(from: InetSocketAddress, threadId: Long) =
         acks.getOrPut(from) { ConcurrentSkipListSet() }.add(threadId)
+
+    private fun packetReceived(from: InetSocketAddress, threadId: Long) = received[from]?.contains(threadId) == true
+    private fun markPacketReceived(from: InetSocketAddress, threadId: Long) =
+        received.getOrPut(from) { ConcurrentSkipListSet() }.add(threadId)
 
     private fun throwIfTransmissionTimeoutElapsed(trtBefore: Long, trtTimeoutMs: Long, threadId: Long) {
         if (System.currentTimeMillis() - trtBefore > trtTimeoutMs)
