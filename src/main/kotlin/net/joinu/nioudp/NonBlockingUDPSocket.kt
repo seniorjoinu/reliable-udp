@@ -105,6 +105,7 @@ class NonBlockingUDPSocket(
             }
 
             if (buf.position() == 0) continue
+
             val size = buf.position()
 
             buf.flip()
