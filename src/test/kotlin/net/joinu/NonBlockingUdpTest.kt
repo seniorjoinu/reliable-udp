@@ -1,7 +1,7 @@
 package net.joinu
 
 import kotlinx.coroutines.*
-import net.joinu.nioudp.NonBlockingUDPSocket
+import net.joinu.nioudp.AsyncUDPSocket
 import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.assertThrows
 import java.net.InetSocketAddress
@@ -24,10 +24,10 @@ class NonBlockingUdpTest {
             val net1Content = ByteArray(10000) { it.toByte() }
             val net2Content = ByteArray(10000) { (10000 - it).toByte() }
 
-            val udp1 = NonBlockingUDPSocket()
+            val udp1 = AsyncUDPSocket()
             udp1.bind(net1Addr)
 
-            val udp2 = NonBlockingUDPSocket()
+            val udp2 = AsyncUDPSocket()
             udp2.bind(net2Addr)
 
             launch(Dispatchers.IO) { udp1.listen() }
@@ -78,7 +78,7 @@ class NonBlockingUdpTest {
             withTimeoutOrNull(timeoutMs) {
                 resultCount = packetCount
                 val net1Addr = InetSocketAddress("localhost", 1337)
-                val udp1 = NonBlockingUDPSocket()
+                val udp1 = AsyncUDPSocket()
                 udp1.bind(net1Addr)
 
                 launch(Dispatchers.IO) {

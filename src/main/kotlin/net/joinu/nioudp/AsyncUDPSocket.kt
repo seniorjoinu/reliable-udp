@@ -1,6 +1,5 @@
 package net.joinu.nioudp
 
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
@@ -10,43 +9,31 @@ import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
-import java.util.concurrent.Executors
 
-
-interface NioSocket {
-    suspend fun bind(address: InetSocketAddress)
-    suspend fun listen()
-    suspend fun send(data: ByteBuffer, to: InetSocketAddress)
-    fun onMessage(handler: NetworkMessageHandler)
-    fun getSocketState(): SocketState
-    suspend fun close()
-}
 
 const val ALLOCATION_THRESHOLD_BYTES = 1400
 
-class NonBlockingUDPSocket : NioSocket {
+class AsyncUDPSocket {
 
-    private val logger = KotlinLogging.logger("NonBlockingUDPSocket-${Random().nextInt()}")
+    private val logger = KotlinLogging.logger("AsyncUDPSocket-${Random().nextInt()}")
 
     lateinit var channel: DatagramChannel
     private val channelMutex = Mutex()
-
-    private val listenDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     var onMessageHandler: NetworkMessageHandler? = null
 
     private var state = SocketState.UNBOUND
 
-    override fun getSocketState() = state
+    fun getSocketState() = state
     fun isClosed(): Boolean = state == SocketState.CLOSED
 
-    override fun onMessage(handler: NetworkMessageHandler) {
+    fun onMessage(handler: NetworkMessageHandler) {
         onMessageHandler = handler
 
         logger.trace { "onMessage handler set" }
     }
 
-    override suspend fun bind(address: InetSocketAddress) {
+    suspend fun bind(address: InetSocketAddress) {
         channelMutex.withLock {
             throwIfNotUnbound()
 
@@ -60,7 +47,7 @@ class NonBlockingUDPSocket : NioSocket {
         }
     }
 
-    override suspend fun close() {
+    suspend fun close() {
         channelMutex.withLock {
             throwIfClosed()
             throwIfUnbound()
@@ -74,18 +61,18 @@ class NonBlockingUDPSocket : NioSocket {
     }
 
     private fun throwIfClosed() {
-        if (isClosed()) error("NonBlockingUDPSocket is already closed.")
+        if (isClosed()) error("AsyncUDPSocket is already closed.")
     }
 
     private fun throwIfNotUnbound() {
-        if (getSocketState() != SocketState.UNBOUND) error("NonBlockingUDPSocket is not UNBOUND")
+        if (getSocketState() != SocketState.UNBOUND) error("AsyncUDPSocket is not UNBOUND")
     }
 
     private fun throwIfUnbound() {
-        if (getSocketState() == SocketState.UNBOUND) error("NonBlockingUDPSocket is UNBOUND")
+        if (getSocketState() == SocketState.UNBOUND) error("AsyncUDPSocket is UNBOUND")
     }
 
-    override suspend fun listen() {
+    suspend fun listen() {
         throwIfClosed()
 
         val buf = ByteBuffer.allocateDirect(MAX_CHUNK_SIZE_BYTES)
@@ -106,7 +93,7 @@ class NonBlockingUDPSocket : NioSocket {
 
                 buf.flip()
 
-                // when allocating byte buffer follow the next rule: if data.size < ~1400 bytes - use on heap buffer, else - use off heap buffer
+                // when allocating byte buffer follow the next rule: if data.size < ~1400 bytes - use on heap buffer, else - use off heap buffer. Why? Because it's faster.
                 val data = if (size < ALLOCATION_THRESHOLD_BYTES)
                     ByteBuffer.allocate(size)
                 else
@@ -128,7 +115,7 @@ class NonBlockingUDPSocket : NioSocket {
         }
     }
 
-    override suspend fun send(data: ByteBuffer, to: InetSocketAddress) {
+    suspend fun send(data: ByteBuffer, to: InetSocketAddress) {
         throwIfClosed()
 
         require(data.limit() <= MAX_CHUNK_SIZE_BYTES) { "Size of data should be LEQ than $MAX_CHUNK_SIZE_BYTES bytes" }

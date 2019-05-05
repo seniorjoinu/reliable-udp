@@ -4,9 +4,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import mu.KotlinLogging
+import net.joinu.nioudp.AsyncUDPSocket
 import net.joinu.nioudp.NetworkMessageHandler
-import net.joinu.nioudp.NonBlockingUDPSocket
-import net.joinu.nioudp.SocketState
 import net.joinu.wirehair.Wirehair
 import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
@@ -30,7 +29,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
     private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
 
-    val socket = NonBlockingUDPSocket()
+    val socket = AsyncUDPSocket()
 
     // TODO: clean up encoders and decoders eventually
     val decoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Pair<Wirehair.Decoder, Mutex>>>()
@@ -326,14 +325,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
         buffer.flip()
 
         socket.send(buffer, to)
-    }
-
-    private fun throwIfClosed() {
-        if (socket.isClosed()) error("RUDPSocket is in CLOSED state")
-    }
-
-    private fun throwNotUnbound() {
-        if (socket.getSocketState() == SocketState.UNBOUND) error("RUDPSocket is not in UNBOUND state")
     }
 }
 
