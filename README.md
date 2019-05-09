@@ -40,8 +40,7 @@ What I really like about it is it's speed and clear API - Christopher is a reall
 I've written a Kotlin wrapper for it [seniorjoinu/wirehair-wrapper](https://github.com/seniorjoinu/wirehair-wrapper)
 
 ### Installation
-1. Make sure you understand how to put `wirehair` binaries into your project correctly - [link](https://github.com/seniorjoinu/wirehair-wrapper#details)
-2. Use [Jitpack](https://jitpack.io/)
+Use [Jitpack](https://jitpack.io/)
 
 ### Example
 Right now there is only one (*configurable*) implementation of `RUDPSocket`.
