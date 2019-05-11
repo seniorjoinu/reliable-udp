@@ -53,6 +53,7 @@ class AsyncUDPSocket {
             throwIfUnbound()
 
             channel.close()
+            onMessageHandler = null
 
             state = SocketState.CLOSED
 

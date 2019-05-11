@@ -1,9 +1,12 @@
 package net.joinu.rudp
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import mu.KotlinLogging
+import net.joinu.nioudp.AckEventHub
 import net.joinu.nioudp.AsyncUDPSocket
 import net.joinu.nioudp.NetworkMessageHandler
 import net.joinu.wirehair.Wirehair
@@ -34,10 +37,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
     // TODO: clean up encoders and decoders eventually
     val decoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Pair<Wirehair.Decoder, Mutex>>>()
     val encoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Wirehair.Encoder>>()
-
-    // TODO: clean up acks eventually
-    val acks = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
-    val received = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
     var onMessageHandler: NetworkMessageHandler? = null
     val repairBlockSizeBytes = mtu - RepairBlock.METADATA_SIZE_BYTES
@@ -84,83 +83,59 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
         val n = data.limit() / blockBytes + 1
 
+        val repairBlockBuffer = ByteBuffer.allocateDirect(blockBytes)
+
         // send N repair blocks
         while (blockId <= n) {
             throwIfTransmissionTimeoutElapsed(trtBefore, trtTimeoutMs, threadId)
 
-            val repairBlockBuffer = ByteBuffer.allocateDirect(blockBytes)
-
-            val encoder = getEncoder(to, threadId, data, blockBytes)
-
-            val writeLen = encoder.encode(blockId, repairBlockBuffer as DirectBuffer, blockBytes)
-
-            val repairBlock = RepairBlock(
-                repairBlockBuffer,
-                writeLen,
-                threadId,
-                blockId,
-                data.limit(),
-                blockBytes
-            )
+            val repairBlock = encode(repairBlockBuffer, to, threadId, blockId, data, blockBytes)
 
             logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
 
             socket.send(repairBlock.serialize(), to)
 
+            repairBlockBuffer.clear()
+
             blockId++
         }
 
         var ackReceived = false
+        AckEventHub.subscribe(to, threadId) {
+            ackReceived = true
+            logger.trace { "Received ACK for threadId: $threadId, stopping..." }
+            AckEventHub.unsubscribe(to, threadId)
+        }
+
         // waiting FCT and send another WINDOW SIZE of repair blocks
         while (!ackReceived) {
             logger.trace { "Sleeping for FCT" }
 
             val fctTimeout = fctTimeoutMsProvider()
-            ackReceived = withTimeoutOrNull(fctTimeout) {
+            withTimeoutOrNull(fctTimeout) {
                 while (true) {
-                    ackReceived(to, threadId)
-                    delay(1)
+                    if (ackReceived) return@withTimeoutOrNull
+                    delay(5)
                 }
-            } != null
-
-            if (ackReceived) {
-                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
-                break
             }
+
+            if (ackReceived)
+                break
 
             val windowSize = windowSizeProvider()
             val k = windowSize / blockBytes + 1
             val prevWindowBlockId = blockId
 
-            while (blockId <= prevWindowBlockId + k) {
-                if (ackReceived(to, threadId)) {
-                    logger.trace { "Received ACK for threadId: $threadId, stopping..." }
-                    ackReceived = true
-                    break
-                }
-
+            while (!ackReceived && blockId <= prevWindowBlockId + k) {
                 throwIfTransmissionTimeoutElapsed(trtBefore, trtTimeoutMs, threadId)
 
-                val repairBlockBuffer = ByteBuffer.allocateDirect(blockBytes)
-
-                val writeLen = getEncoder(to, threadId, data, blockBytes).encode(
-                    blockId,
-                    repairBlockBuffer as DirectBuffer,
-                    blockBytes
-                )
-
-                val repairBlock = RepairBlock(
-                    repairBlockBuffer,
-                    writeLen,
-                    threadId,
-                    blockId,
-                    data.limit(),
-                    blockBytes
-                )
+                val repairBlock = encode(repairBlockBuffer, to, threadId, blockId, data, blockBytes)
 
                 logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
 
                 socket.send(repairBlock.serialize(), to)
+
+                repairBlockBuffer.clear()
 
                 blockId++
             }
@@ -170,6 +145,41 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
         getEncoder(to, threadId, data, blockBytes).close()
         encoders[to]?.remove(threadId)
+    }
+
+    private fun encode(
+        repairBlockBuffer: ByteBuffer,
+        to: InetSocketAddress,
+        threadId: Long,
+        blockId: Int,
+        message: ByteBuffer,
+        blockSizeBytes: Int
+    ): RepairBlock {
+        return if (message.limit() > blockSizeBytes) {
+            val writeLen = getEncoder(to, threadId, message, blockSizeBytes).encode(
+                blockId,
+                repairBlockBuffer as DirectBuffer,
+                blockSizeBytes
+            )
+
+            RepairBlock(
+                repairBlockBuffer,
+                writeLen,
+                threadId,
+                blockId,
+                message.limit(),
+                blockSizeBytes
+            )
+        } else {
+            RepairBlock(
+                message,
+                message.limit(),
+                threadId,
+                blockId,
+                message.limit(),
+                blockSizeBytes
+            )
+        }
     }
 
     /**
@@ -201,6 +211,9 @@ class ConfigurableRUDPSocket(mtu: Int) {
         socket.bind(address)
     }
 
+    // TODO: clean up acks eventually
+    val received = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
+
     /**
      * Listens to incoming messages
      *
@@ -215,66 +228,82 @@ class ConfigurableRUDPSocket(mtu: Int) {
      * @throws [net.joinu.wirehair.WirehairException]
      */
     suspend fun listen() {
-        socket.onMessage { bytes, from ->
-            val flag = parseFlag(bytes)
+        supervisorScope {
+            socket.onMessage { bytes, from ->
+                val flag = parseFlag(bytes)
 
-            when (flag) {
-                Flags.ACK -> {
-                    val ack = parseACK(bytes)
+                when (flag) {
+                    Flags.ACK -> {
+                        val ack = parseACK(bytes)
 
-                    // TODO: handle acks received after transmission end but prevent new blocks of already received transmission to count like a new transmission
+                        // TODO: handle acks received after transmission end but prevent new blocks of already received transmission to count like a new transmission
 
-                    logger.trace { "Received ACK message for threadId: $ack from: $from" }
+                        logger.trace { "Received ACK message for threadId: $ack from: $from" }
 
-                    putACK(from, ack)
-                }
-                Flags.REPAIR -> {
-                    val block = parseRepairBlock(bytes)
-
-                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
-
-                    if (packetReceived(from, block.threadId)) {
-                        logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
-                        sendACK(block.threadId, from)
-                        return@onMessage
+                        AckEventHub.fire(from, ack)
                     }
+                    Flags.REPAIR -> {
+                        val block = parseRepairBlock(bytes)
 
-                    val (decoder, decoderMutex) = getDecoderAndMutex(from, block)
+                        logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
 
-                    decoderMutex.lock()
-
-                    if (decoders[from]?.containsKey(block.threadId) == true) {
-                        val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
-
-                        if (!enough) {
-                            decoderMutex.unlock()
+                        if (packetReceived(from, block.threadId)) {
+                            logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
+                            sendACK(block.threadId, from)
                             return@onMessage
                         }
 
-                        val message = ByteBuffer.allocateDirect(block.messageBytes)
-                        decoder.recover(message as DirectBuffer, block.messageBytes)
+                        val message = tryToRecover(from, block) ?: return@onMessage
 
                         markPacketReceived(from, block.threadId)
 
-                        decoder.close()
-                        decoders[from]?.remove(block.threadId)
-
-                        decoderMutex.unlock()
-
-                        sendACK(block.threadId, from)
+                        launch {
+                            sendACK(block.threadId, from)
+                        }
 
                         logger.trace { "Invoking onMessage handler" }
                         onMessageHandler?.invoke(message, from)
                     }
-
-                    if (decoderMutex.isLocked)
-                        decoderMutex.unlock()
+                    else -> logger.error { "Received invalid type of message" }
                 }
-                else -> logger.error { "Received invalid type of message" }
             }
         }
 
         socket.listen()
+    }
+
+    private suspend fun tryToRecover(address: InetSocketAddress, block: RepairBlock): ByteBuffer? {
+        if (block.messageBytes > block.blockBytes) {
+            val (decoder, decoderMutex) = getDecoderAndMutex(address, block)
+
+            decoderMutex.lock()
+
+            if (decoders[address]?.containsKey(block.threadId) == true) {
+                val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
+
+                if (!enough) {
+                    decoderMutex.unlock()
+                    return null
+                }
+
+                val message = ByteBuffer.allocateDirect(block.messageBytes)
+                decoder.recover(message as DirectBuffer, block.messageBytes)
+
+                decoder.close()
+                decoders[address]?.remove(block.threadId)
+
+                decoderMutex.unlock()
+
+                return message
+            }
+
+            if (decoderMutex.isLocked)
+                decoderMutex.unlock()
+
+            return null
+        } else {
+            return block.data
+        }
     }
 
     private fun getDecoderAndMutex(address: InetSocketAddress, block: RepairBlock): Pair<Wirehair.Decoder, Mutex> {
@@ -297,10 +326,6 @@ class ConfigurableRUDPSocket(mtu: Int) {
             Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), blockSizeBytes)
         }
     }
-
-    private fun ackReceived(from: InetSocketAddress, threadId: Long) = acks[from]?.contains(threadId) == true
-    private fun putACK(from: InetSocketAddress, threadId: Long) =
-        acks.getOrPut(from) { ConcurrentSkipListSet() }.add(threadId)
 
     private fun packetReceived(from: InetSocketAddress, threadId: Long) = received[from]?.contains(threadId) == true
     private fun markPacketReceived(from: InetSocketAddress, threadId: Long) =

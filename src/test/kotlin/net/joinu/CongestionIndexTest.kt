@@ -2,13 +2,15 @@ package net.joinu
 
 import net.joinu.rudp.cma.CongestionIndex
 import net.joinu.rudp.cma.MAX_POSSIBLE_LATENCY
-import net.joinu.utils.Rng.rng
 import net.joinu.utils.nextFloat
 import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.Test
+import java.util.*
 
 
 class CongestionIndexTest {
+    val rng = Random()
+
     @Test
     fun `creates with correct values`() {
         val index = CongestionIndex()
