@@ -24,8 +24,9 @@ class QueuedUDPSocket(bufferSize: Int = Int.MAX_VALUE) {
         synchronized(socketDispatcher.state) {
             throwIfNotUnbound()
             socketDispatcher.bind(on)
+
+            socketDispatcher.start()
         }
-        socketDispatcher.start()
     }
 
     fun send(data: ByteArray, to: InetSocketAddress) {
@@ -56,10 +57,31 @@ class QueuedUDPSocket(bufferSize: Int = Int.MAX_VALUE) {
         return null
     }
 
-    fun close() {
+    fun receiveBlocking(timeoutMs: Long): QueuedDatagramPacket? {
+        val before = System.currentTimeMillis()
+        while (true) {
+            val packet = receiveAsync()
+            if (packet != null)
+                return packet
+
+            val after = System.currentTimeMillis()
+
+            if (after - before >= timeoutMs)
+                break
+        }
+
+        return null
+    }
+
+    fun close(timeoutMs: Long = 0) {
         synchronized(socketDispatcher.state) {
             throwIfClosed()
             socketDispatcher.close()
+
+            if (timeoutMs == 0L)
+                socketDispatcher.join()
+            else
+                socketDispatcher.join(timeoutMs)
         }
     }
 
@@ -100,17 +122,12 @@ class SocketDispatcher(bufferSize: Int) : Thread("SocketDispatcher-${nextDispatc
                 send(sentPacket)
             }
 
+            if (state != SocketState.LISTENING)
+                break
+
             val receivedPacket = receive()
             if (receivedPacket != null)
                 readQueue.add(receivedPacket)
-        }
-
-        taskComplete = true
-    }
-
-    private var taskComplete = false
-    private fun await() {
-        while (!taskComplete) {
         }
     }
 
@@ -154,7 +171,6 @@ class SocketDispatcher(bufferSize: Int) : Thread("SocketDispatcher-${nextDispatc
 
     fun close() {
         state = SocketState.CLOSED
-        await()
         channel.close()
     }
 
