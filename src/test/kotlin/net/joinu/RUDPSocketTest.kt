@@ -14,7 +14,7 @@ import java.nio.ByteBuffer
 class RUDPSocketTest {
     init {
         //System.setProperty("jna.debug_load", "true")
-        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
     @RepeatedTest(100)
@@ -35,17 +35,15 @@ class RUDPSocketTest {
             val net1Content = ByteArray(50) { it.toByte() }
 
             val rudp1 = ConfigurableRUDPSocket(508)
-            rudp1.bind(net1Addr)
 
             val rudp2 = ConfigurableRUDPSocket(508)
-            rudp2.bind(net2Addr)
 
             launch(Dispatchers.IO) {
-                rudp1.listen()
+                rudp1.listen(net1Addr)
             }
 
             launch(Dispatchers.IO) {
-                rudp2.listen()
+                rudp2.listen(net2Addr)
             }
 
             val n = 100
@@ -110,16 +108,13 @@ class RUDPSocketTest {
             val net2Content = ByteArray(dataSize) { (100000 - it).toByte() }
 
             val rudp1 = ConfigurableRUDPSocket(mtu)
-            rudp1.bind(net1Addr)
-
             val rudp2 = ConfigurableRUDPSocket(mtu)
-            rudp2.bind(net2Addr)
 
             launch(Dispatchers.IO) {
-                rudp1.listen()
+                rudp1.listen(net1Addr)
             }
             launch(Dispatchers.IO) {
-                rudp2.listen()
+                rudp2.listen(net2Addr)
             }
 
             var sent1 = false

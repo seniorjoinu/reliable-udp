@@ -1,14 +1,12 @@
 package net.joinu.rudp
 
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import mu.KotlinLogging
 import net.joinu.nioudp.AckEventHub
-import net.joinu.nioudp.AsyncUDPSocket
 import net.joinu.nioudp.NetworkMessageHandler
+import net.joinu.nioudp.QueuedUDPSocket
 import net.joinu.wirehair.Wirehair
 import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
@@ -32,9 +30,9 @@ class ConfigurableRUDPSocket(mtu: Int) {
 
     private val logger = KotlinLogging.logger("ConfigurableRUDPSocket-${Random().nextInt()}")
 
-    val socket = AsyncUDPSocket()
+    val socket = QueuedUDPSocket(mtu)
 
-    // TODO: clean up encoders and decoders eventually
+    // TODO: create encoders only when enough bytes received
     val decoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Pair<Wirehair.Decoder, Mutex>>>()
     val encoders = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Long, Wirehair.Encoder>>()
 
@@ -115,7 +113,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
             withTimeoutOrNull(fctTimeout) {
                 while (true) {
                     if (ackReceived) return@withTimeoutOrNull
-                    delay(5)
+                    delay(1)
                 }
             }
 
@@ -193,25 +191,14 @@ class ConfigurableRUDPSocket(mtu: Int) {
         onMessageHandler = handler
     }
 
-    fun getSocketState() = socket.getSocketState()
-
     /**
      * Closes this socket - after this you should create another one to work with
      */
-    suspend fun close() {
+    fun close() {
         socket.close()
     }
 
-    /**
-     * Binds to some local address
-     *
-     * @param address [InetSocketAddress] - local address to bind to
-     */
-    suspend fun bind(address: InetSocketAddress) {
-        socket.bind(address)
-    }
-
-    // TODO: clean up acks eventually
+    // TODO: rewrite this shit
     val received = ConcurrentHashMap<InetSocketAddress, ConcurrentSkipListSet<Long>>()
 
     /**
@@ -222,54 +209,50 @@ class ConfigurableRUDPSocket(mtu: Int) {
      *  repair block to the decoder and try to recover the original message. If recovery succeeds we send ACK and execute
      *  onMessage handler.
      *
-     * WARNING: onMessage handler executes on IO dispatcher by default, so make sure you do all computational stuff on
-     *  another dispatcher.
-     *
      * @throws [net.joinu.wirehair.WirehairException]
      */
-    suspend fun listen() {
-        supervisorScope {
-            socket.onMessage { bytes, from ->
-                val flag = parseFlag(bytes)
+    suspend fun listen(on: InetSocketAddress) {
+        socket.listen(on)
 
-                when (flag) {
-                    Flags.ACK -> {
-                        val ack = parseACK(bytes)
+        loop@ while (!socket.isClosed()) {
+            val packet = socket.receiveBlocking { socket.isClosed() }
+                ?: break
 
-                        // TODO: handle acks received after transmission end but prevent new blocks of already received transmission to count like a new transmission
+            val (bytes, from) = packet
 
-                        logger.trace { "Received ACK message for threadId: $ack from: $from" }
+            val flag = parseFlag(bytes)
 
-                        AckEventHub.fire(from, ack)
-                    }
-                    Flags.REPAIR -> {
-                        val block = parseRepairBlock(bytes)
+            when (flag) {
+                Flags.ACK -> {
+                    val ack = parseACK(bytes)
 
-                        logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
+                    logger.trace { "Received ACK message for threadId: $ack from: $from" }
 
-                        if (packetReceived(from, block.threadId)) {
-                            logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
-                            sendACK(block.threadId, from)
-                            return@onMessage
-                        }
-
-                        val message = tryToRecover(from, block) ?: return@onMessage
-
-                        markPacketReceived(from, block.threadId)
-
-                        launch {
-                            sendACK(block.threadId, from)
-                        }
-
-                        logger.trace { "Invoking onMessage handler" }
-                        onMessageHandler?.invoke(message, from)
-                    }
-                    else -> logger.error { "Received invalid type of message" }
+                    AckEventHub.fire(from, ack)
                 }
+                Flags.REPAIR -> {
+                    val block = parseRepairBlock(bytes)
+
+                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
+
+                    if (packetReceived(from, block.threadId)) {
+                        logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
+                        sendACK(block.threadId, from)
+                        continue@loop
+                    }
+
+                    val message = tryToRecover(from, block) ?: continue@loop
+
+                    markPacketReceived(from, block.threadId)
+
+                    sendACK(block.threadId, from)
+
+                    logger.trace { "Invoking onMessage handler" }
+                    onMessageHandler?.invoke(message, from)
+                }
+                else -> logger.error { "Received invalid type of message" }
             }
         }
-
-        socket.listen()
     }
 
     private suspend fun tryToRecover(address: InetSocketAddress, block: RepairBlock): ByteBuffer? {
@@ -340,7 +323,7 @@ class ConfigurableRUDPSocket(mtu: Int) {
     private fun parseACK(buffer: ByteBuffer) = buffer.long
     private fun parseFlag(buffer: ByteBuffer) = buffer.get()
 
-    private suspend fun sendACK(threadId: Long, to: InetSocketAddress) {
+    private fun sendACK(threadId: Long, to: InetSocketAddress) {
         logger.trace { "Sending ACK for threadId: $threadId to $to" }
 
         val ackSize = Byte.SIZE_BYTES + Long.SIZE_BYTES

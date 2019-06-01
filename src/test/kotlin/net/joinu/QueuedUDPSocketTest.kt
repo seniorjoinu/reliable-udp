@@ -7,6 +7,7 @@ import net.joinu.nioudp.QueuedUDPSocket
 import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 
 
 class QueuedUDPSocketTest {
@@ -28,17 +29,17 @@ class QueuedUDPSocketTest {
         socket1.send(data1, addr2)
         socket2.send(data2, addr1)
 
-        val (data2Received, addr2Received) = socket1.receiveBlocking()!!.toPairByteArray()
-        val (data1Received, addr1Received) = socket2.receiveBlocking()!!.toPairByteArray()
+        val (data2Received, addr2Received) = socket1.receiveBlocking()!!
+        val (data1Received, addr1Received) = socket2.receiveBlocking()!!
 
         socket1.close()
         socket2.close()
 
-        assert(data1.contentEquals(data1Received)) { "data1 is not equal" }
-        assert(data2.contentEquals(data2Received)) { "data2 is not equal" }
+        assert(data1.contentEquals(data1Received.toByteArray())) { "data1 is not equal" }
+        assert(data2.contentEquals(data2Received.toByteArray())) { "data2 is not equal" }
 
-        println(data1Received.contentToString())
-        println(data2Received.contentToString())
+        println(data1Received.toByteArray().contentToString())
+        println(data2Received.toByteArray().contentToString())
     }
 
     @RepeatedTest(100)
@@ -67,19 +68,27 @@ class QueuedUDPSocketTest {
         }
 
         for (i in 0 until repeats) {
-            val (data2Received, addr2Received) = socket1.receiveBlocking()!!.toPairByteArray()
-            assert(data2.contentEquals(data2Received)) { "data2 is not equal" }
-            println("$i ${data2Received.contentToString()}")
+            val (data2Received, addr2Received) = socket1.receiveBlocking()!!
+            assert(data2.contentEquals(data2Received.toByteArray())) { "data2 is not equal" }
+            println("$i ${data2Received.toByteArray().contentToString()}")
         }
 
         for (i in 0 until repeats) {
-            val (data1Received, addr1Received) = socket2.receiveBlocking()!!.toPairByteArray()
-            assert(data1.contentEquals(data1Received)) { "data1 is not equal" }
-            println("$i ${data1Received.contentToString()}")
+            val (data1Received, addr1Received) = socket2.receiveBlocking()!!
+            assert(data1.contentEquals(data1Received.toByteArray())) { "data1 is not equal" }
+            println("$i ${data1Received.toByteArray().contentToString()}")
         }
 
         socket1.close()
         socket2.close()
+    }
+
+    fun ByteBuffer.toByteArray(): ByteArray {
+        val array = ByteArray(limit())
+        get(array)
+        flip()
+
+        return array
     }
 
     @RepeatedTest(100)
@@ -110,15 +119,15 @@ class QueuedUDPSocketTest {
 
             for (i in 0 until repeats) {
                 launch {
-                    val (data2Received, addr2Received) = socket1.receiveBlocking()!!.toPairByteArray()
-                    assert(data2.contentEquals(data2Received)) { "data2 is not equal" }
-                    println("$i ${data2Received.contentToString()}")
+                    val (data2Received, addr2Received) = socket1.receiveBlocking()!!
+                    assert(data2.contentEquals(data2Received.toByteArray())) { "data2 is not equal" }
+                    println("$i ${data2Received.toByteArray().contentToString()}")
                     received1++
                 }
                 launch {
-                    val (data1Received, addr1Received) = socket2.receiveBlocking()!!.toPairByteArray()
-                    assert(data1.contentEquals(data1Received)) { "data1 is not equal" }
-                    println("$i ${data1Received.contentToString()}")
+                    val (data1Received, addr1Received) = socket2.receiveBlocking()!!
+                    assert(data1.contentEquals(data1Received.toByteArray())) { "data1 is not equal" }
+                    println("$i ${data1Received.toByteArray().contentToString()}")
                     received2++
                 }
             }

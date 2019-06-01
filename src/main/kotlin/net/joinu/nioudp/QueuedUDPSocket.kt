@@ -6,19 +6,12 @@ import java.nio.channels.DatagramChannel
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
-data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress) {
-    fun toPair(): Pair<ByteBuffer, InetSocketAddress> = Pair(data, address)
-    fun toPairByteArray(): Pair<ByteArray, InetSocketAddress> {
-        val array = ByteArray(data.limit())
-        data.get(array)
-        data.flip()
-
-        return Pair(array, address)
-    }
-}
+data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)
 
 class QueuedUDPSocket(bufferSize: Int = Int.MAX_VALUE) {
     private val socketDispatcher = SocketDispatcher(bufferSize)
+
+    fun isClosed(): Boolean = socketDispatcher.state == SocketState.CLOSED
 
     fun listen(on: InetSocketAddress) {
         synchronized(socketDispatcher.state) {
