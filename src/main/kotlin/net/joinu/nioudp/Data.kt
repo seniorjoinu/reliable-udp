@@ -13,20 +13,27 @@ const val MAX_CHUNK_SIZE_BYTES = 65_507
 const val RECOMMENDED_CHUNK_SIZE_BYTES = 504
 const val DATA_SIZE_BYTES = 4
 
+data class Ack(val threadId: Long, val congestionIndex: Float)
+data class BlockAck(val threadId: Long, val blockId: Int, val congestionIndex: Float)
 
 object AckEventHub {
     val subscribers = mutableMapOf<InetSocketAddress, MutableMap<Long, () -> Unit>>()
 
-    fun subscribe(address: InetSocketAddress, threadId: Long, block: () -> Unit) {
+    fun subscribeAck(address: InetSocketAddress, threadId: Long, block: () -> Unit) {
         val blocks = subscribers.getOrPut(address) { mutableMapOf() }
         blocks[threadId] = block
     }
 
-    fun unsubscribe(address: InetSocketAddress, threadId: Long) {
+    fun unsubscribeAck(address: InetSocketAddress, threadId: Long) {
         subscribers[address]?.remove(threadId)
     }
 
-    fun fire(address: InetSocketAddress, threadId: Long) {
+    fun fireAck(address: InetSocketAddress, threadId: Long) {
         subscribers[address]?.get(threadId)?.invoke()
     }
+
+    fun subscribeBlockAck(
+        address: InetSocketAddress,
+        threadId: Long,
+        blockId: Int: () ->) // TODO: fix this according to new [Ack] and [BlockAck]
 }
