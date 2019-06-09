@@ -32,7 +32,7 @@ class RUDPSocketTest {
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(50) { it.toByte() }
+            val net1Content = ByteArray(1000) { it.toByte() }
 
             val rudp1 = RUDPSocket(508)
             val rudp2 = RUDPSocket(508)

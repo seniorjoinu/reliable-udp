@@ -292,7 +292,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
             }
 
             logger.trace { "Sleeping for CCT" }
-            delay(1) // TODO: sleep congestion control timeout
+            delay(100) // TODO: sleep congestion control timeout
         }
 
         encoder.close()
@@ -324,7 +324,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
             }
 
             logger.trace { "Sleeping for CCT" }
-            delay(1) // TODO: sleep congestion control timeout
+            delay(100) // TODO: sleep congestion control timeout
         }
     }
 }
