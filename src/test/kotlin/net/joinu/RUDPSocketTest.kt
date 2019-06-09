@@ -6,7 +6,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.RUDPSocket
 import org.junit.jupiter.api.RepeatedTest
-import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
@@ -19,7 +18,7 @@ class RUDPSocketTest {
 
     @RepeatedTest(100)
     fun `single send-receive works fine with big data`() {
-        `single send-receive works fine`(100000, 1400)
+        `single send-receive works fine`(100000, 100)
     }
 
     @RepeatedTest(100)
@@ -27,7 +26,7 @@ class RUDPSocketTest {
         `single send-receive works fine`(10, 100)
     }
 
-    @Test
+    @RepeatedTest(100)
     fun `multiple concurrent sends work fine`() {
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
@@ -81,7 +80,7 @@ class RUDPSocketTest {
                     rudp2.close()
                     break
                 }
-                delay(1)
+                delay(100)
                 println("$sent1, $receive1, $sent2, $receive2")
             }
         }

@@ -118,11 +118,11 @@ data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: F
 
 data class RepairBlock(
     val data: ByteBuffer,
-    val writeLen: Int,
+    val actualBlockSizeBytes: Int,
     val threadId: UUID,
     val blockId: Int,
-    val messageBytes: Int,
-    val blockBytes: Int,
+    val messageSizeBytes: Int,
+    val blockSizeBytes: Int,
     val latencyMs: Short,
     val lossRate: Float,
     val congestionIndex: Float
@@ -161,19 +161,19 @@ data class RepairBlock(
     }
 
     fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocate(writeLen + METADATA_SIZE_BYTES)
+        val buffer = ByteBuffer.allocate(actualBlockSizeBytes + METADATA_SIZE_BYTES)
 
-        data.limit(writeLen)
+        data.limit(actualBlockSizeBytes)
         buffer.put(Flags.REPAIR)
             .putLong(threadId.mostSignificantBits)
             .putLong(threadId.leastSignificantBits)
-            .putInt(messageBytes)
+            .putInt(messageSizeBytes)
             .putInt(blockId)
-            .putInt(blockBytes)
+            .putInt(blockSizeBytes)
             .putShort(latencyMs)
             .putFloat(lossRate)
             .putFloat(congestionIndex)
-            .putInt(writeLen)
+            .putInt(actualBlockSizeBytes)
             .put(data)
 
         buffer.flip()

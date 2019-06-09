@@ -1,7 +1,6 @@
 package net.joinu.rudp
 
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
 import mu.KotlinLogging
 import net.joinu.nioudp.*
 import net.joinu.wirehair.Wirehair
@@ -9,76 +8,10 @@ import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
-class RUDPStorage(val cleanUpAfterElapsedMs: Long) {
-    val sendThreads = ConcurrentHashMap<UUID, InetSocketAddress>()
-    val receiveThreads = ConcurrentHashMap<UUID, InetSocketAddress>()
-    val finishedReceiveThreads = ConcurrentLinkedQueue<Pair<Long, UUID>>()
-
-    val decoders = ConcurrentHashMap<UUID, Pair<Wirehair.Decoder, Mutex>>()
-
-    fun sendThreadStart(address: InetSocketAddress): UUID {
-        val uuid = UUID.randomUUID()
-        sendThreads[uuid] = address
-
-        return uuid
-    }
-
-    fun sendThreadEnd(threadId: UUID) = sendThreads.remove(threadId)
-
-    fun isThreadConsideredReceived(threadId: UUID) = finishedReceiveThreads.find { it.second == threadId } != null
-
-    fun isSendThreadInProcess(threadId: UUID) = sendThreads.containsKey(threadId)
-
-    fun receiveThreadStart(address: InetSocketAddress, threadId: UUID) {
-        receiveThreads[threadId] = address
-
-        cleanUpFinishedReceiveThreads()
-    }
-
-    fun receiveThreadEnd(threadId: UUID): InetSocketAddress? {
-        val addr = receiveThreads.remove(threadId)
-        if (addr != null)
-            finishedReceiveThreads.add(System.currentTimeMillis() to threadId)
-
-        return addr
-    }
-
-    fun isReceiveThreadInProcess(threadId: UUID) = receiveThreads.containsKey(threadId)
-
-    fun getDecoder(threadId: UUID) = decoders[threadId]
-
-    fun putDecoder(repairBlock: RepairBlock): Pair<Wirehair.Decoder, Mutex> {
-        val decoder = Pair(Wirehair.Decoder(repairBlock.messageBytes, repairBlock.blockBytes), Mutex())
-
-        decoders[repairBlock.threadId] = decoder
-
-        return Pair(decoder.first, decoder.second)
-    }
-
-    fun removeDecoder(threadId: UUID): Pair<Wirehair.Decoder, Mutex>? {
-        val decoder = decoders[threadId]
-        decoder?.first?.close()
-
-        return decoders.remove(threadId)
-    }
-
-    private fun cleanUpFinishedReceiveThreads() {
-        val now = System.currentTimeMillis()
-
-        while (finishedReceiveThreads.isNotEmpty()) {
-            val lastEntry = finishedReceiveThreads.peek()
-            if (lastEntry.first + cleanUpAfterElapsedMs > now) return
-
-            finishedReceiveThreads.remove()
-        }
-    }
-}
-
-class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
+class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
     companion object {
         var count = 0
 
@@ -87,36 +20,51 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
         }
     }
 
-    var onMessageHandler: NetworkMessageHandler? = null
+    val sendQueue = ConcurrentLinkedQueue<Pair<QueuedDatagramPacket, () -> Boolean>>()
+    val receiveQueue = ConcurrentLinkedQueue<Pair<QueuedDatagramPacket, () -> Boolean>>()
 
     private val logger = KotlinLogging.logger("RUDPSocket-${++count}")
 
-    val storage = RUDPStorage(cleanUpAfterElapsedMs)
+    val contextManager = RUDPContextManager()
     val socket = QueuedUDPSocket(mtuBytes)
     val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
 
-    suspend fun send(data: ByteBuffer, to: InetSocketAddress, stop: () -> Boolean = { false }) {
-        val threadId = storage.sendThreadStart(to)
+    private fun processSend() {
+        val contexts = contextManager.getAllSendContexts()
 
-        logger.trace { "Transmission for threadId: $threadId is started" }
+        contexts.asSequence()
+            .filter { it.isCongestionControlTimeoutElapsed(10) } // TODO: get from CC
+            .map { it.getNextWindowSizeRepairBlocks(repairBlockSizeBytes * 2) to it.packet.address } // TODO: get from CC
+            .forEach { (blocks, to) ->
+                blocks.forEach { } // TODO: send
+            }
+    }
 
-        var ackReceived = false
-        AckEventHub.subscribeAck(threadId) {
-            ackReceived = true
-            logger.trace { "Received ACK for threadId: $threadId, stopping..." }
-            AckEventHub.unsubscribeAck(threadId)
-            storage.sendThreadEnd(threadId)
+    private fun prepareSend() {
+        contextManager.destroyAllExitedSendContexts()
+            .forEach { AckEventHub.unsubscribeBlockAck(it) }
+
+        sendQueue.forEach { (packet, exit) ->
+            val threadId = UUID.randomUUID()
+
+            logger.trace { "Transmission for threadId: $threadId is started" }
+
+            val context = contextManager.createOrGetSendContext(threadId, packet, repairBlockSizeBytes) {
+                exit() || ackReceived
+            }
+
+            AckEventHub.subscribeAck(threadId) {
+                context.ackReceived = true
+                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
+                AckEventHub.unsubscribeAck(threadId)
+            }
+
+            AckEventHub.subscribeBlockAck(threadId) { /* TODO: handle congestion control tune */ }
         }
+    }
 
-        AckEventHub.subscribeBlockAck(threadId) { /* TODO: handle congestion control tune */ }
-
-        if (data.limit() > repairBlockSizeBytes) {
-            val repairBlockBuffer = ByteBuffer.allocateDirect(repairBlockSizeBytes)
-            sendEncodingLoop(data, to, repairBlockBuffer, threadId) { ackReceived || stop() }
-        } else
-            sendDummyLoop(data, to, threadId) { ackReceived || stop() }
-
-        AckEventHub.unsubscribeBlockAck(threadId)
+    fun send(data: ByteBuffer, to: InetSocketAddress, stop: () -> Boolean = { false }) {
+        sendQueue.add(QueuedDatagramPacket(data, to) to stop)
     }
 
     suspend fun listen(on: InetSocketAddress) {
@@ -169,7 +117,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
                     sendAck(block.threadId, from)
 
                     logger.trace { "Invoking onMessage handler" }
-                    onMessageHandler?.invoke(message, from)
+                    onMessageHandler.invoke(message, from)
                 }
                 else -> logger.error { "Received invalid type of message" }
             }
@@ -195,7 +143,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
     }
 
     private suspend fun tryToRecover(block: RepairBlock): ByteBuffer? {
-        if (block.messageBytes == block.blockBytes)
+        if (block.messageSizeBytes == block.blockSizeBytes)
             return block.data
 
         val (decoder, decoderMutex) = if (storage.getDecoder(block.threadId) == null)
@@ -206,15 +154,15 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
         decoderMutex.lock()
 
         if (storage.getDecoder(block.threadId) != null) {
-            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.writeLen)
+            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
 
             if (!enough) {
                 decoderMutex.unlock()
                 return null
             }
 
-            val message = ByteBuffer.allocateDirect(block.messageBytes)
-            decoder.recover(message as DirectBuffer, block.messageBytes)
+            val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
+            decoder.recover(message as DirectBuffer, block.messageSizeBytes)
 
             storage.removeDecoder(block.threadId)
 
@@ -263,6 +211,8 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
 
         val encoder = Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), repairBlockSizeBytes)
 
+        buffer.clear()
+
         var blockId = 1
 
         while (!stop()) {
@@ -292,7 +242,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
             }
 
             logger.trace { "Sleeping for CCT" }
-            delay(100) // TODO: sleep congestion control timeout
+            delay(1) // TODO: sleep congestion control timeout
         }
 
         encoder.close()
@@ -324,7 +274,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpAfterElapsedMs: Long = 1000 * 60 * 10) {
             }
 
             logger.trace { "Sleeping for CCT" }
-            delay(100) // TODO: sleep congestion control timeout
+            delay(1) // TODO: sleep congestion control timeout
         }
     }
 }

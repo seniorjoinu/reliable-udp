@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)
 
 class QueuedUDPSocket(bufferSize: Int = Int.MAX_VALUE) {
-    private val socketDispatcher = SocketDispatcher(bufferSize)
+    private val socketDispatcher = QueuedSocketDispatcher(bufferSize)
 
     fun isClosed(): Boolean = socketDispatcher.state == SocketState.CLOSED
 
@@ -84,7 +84,7 @@ class QueuedUDPSocket(bufferSize: Int = Int.MAX_VALUE) {
     private fun throwIfClosed() = check(socketDispatcher.state != SocketState.CLOSED) { "Socket is CLOSED" }
 }
 
-class SocketDispatcher(bufferSize: Int) : Thread("SocketDispatcher-${nextDispatcherIndex()}") {
+class QueuedSocketDispatcher(bufferSize: Int) : Thread("QueuedSocketDispatcher-${nextDispatcherIndex()}") {
     private var channel = DatagramChannel.open()
     private val buffer = ByteBuffer.allocateDirect(bufferSize)
 
