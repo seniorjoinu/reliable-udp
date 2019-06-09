@@ -4,7 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import net.joinu.rudp.ConfigurableRUDPSocket
+import net.joinu.rudp.RUDPSocket
 import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
@@ -14,7 +14,7 @@ import java.nio.ByteBuffer
 class RUDPSocketTest {
     init {
         //System.setProperty("jna.debug_load", "true")
-        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
     @RepeatedTest(100)
@@ -34,18 +34,15 @@ class RUDPSocketTest {
             val net2Addr = InetSocketAddress("localhost", 1338)
             val net1Content = ByteArray(50) { it.toByte() }
 
-            val rudp1 = ConfigurableRUDPSocket(508)
-            rudp1.bind(net1Addr)
-
-            val rudp2 = ConfigurableRUDPSocket(508)
-            rudp2.bind(net2Addr)
+            val rudp1 = RUDPSocket(508)
+            val rudp2 = RUDPSocket(508)
 
             launch(Dispatchers.IO) {
-                rudp1.listen()
+                rudp1.listen(net1Addr)
             }
 
             launch(Dispatchers.IO) {
-                rudp2.listen()
+                rudp2.listen(net2Addr)
             }
 
             val n = 100
@@ -58,12 +55,7 @@ class RUDPSocketTest {
             var sent1 = 1
             for (i in (0 until n)) {
                 launch(Dispatchers.IO) {
-                    rudp1.send(
-                        net1Content.toDirectByteBuffer(),
-                        net2Addr,
-                        fctTimeoutMsProvider = { 100 },
-                        windowSizeProvider = { 300 }
-                    )
+                    rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
                     sent1++
                 }
             }
@@ -76,12 +68,7 @@ class RUDPSocketTest {
             var sent2 = 1
             for (i in (0 until n)) {
                 launch(Dispatchers.IO) {
-                    rudp2.send(
-                        net1Content.toDirectByteBuffer(),
-                        net1Addr,
-                        fctTimeoutMsProvider = { 100 },
-                        windowSizeProvider = { 300 }
-                    )
+                    rudp2.send(net1Content.toDirectByteBuffer(), net1Addr)
                     sent2++
                 }
             }
@@ -109,17 +96,14 @@ class RUDPSocketTest {
             val net1Content = ByteArray(dataSize) { it.toByte() }
             val net2Content = ByteArray(dataSize) { (100000 - it).toByte() }
 
-            val rudp1 = ConfigurableRUDPSocket(mtu)
-            rudp1.bind(net1Addr)
-
-            val rudp2 = ConfigurableRUDPSocket(mtu)
-            rudp2.bind(net2Addr)
+            val rudp1 = RUDPSocket(mtu)
+            val rudp2 = RUDPSocket(mtu)
 
             launch(Dispatchers.IO) {
-                rudp1.listen()
+                rudp1.listen(net1Addr)
             }
             launch(Dispatchers.IO) {
-                rudp2.listen()
+                rudp2.listen(net2Addr)
             }
 
             var sent1 = false
@@ -135,7 +119,7 @@ class RUDPSocketTest {
                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
                 val after = System.currentTimeMillis()
-                println("2->1 Transmission of 100 kb took ${after - before} ms locally")
+                println("2->1 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
 
                 receive1 = true
             }
@@ -148,27 +132,17 @@ class RUDPSocketTest {
                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
 
                 val after = System.currentTimeMillis()
-                println("1->2 Transmission of 100 kb took ${after - before} ms locally")
+                println("1->2 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
 
                 receive2 = true
             }
 
             launch {
-                rudp1.send(
-                    net1Content.toDirectByteBuffer(),
-                    net2Addr,
-                    fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { mtu * 2 }
-                )
+                rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
                 sent1 = true
             }
             launch {
-                rudp2.send(
-                    net2Content.toDirectByteBuffer(),
-                    net1Addr,
-                    fctTimeoutMsProvider = { 50 },
-                    windowSizeProvider = { mtu * 2 }
-                )
+                rudp2.send(net2Content.toDirectByteBuffer(), net1Addr)
                 sent2 = true
             }
 

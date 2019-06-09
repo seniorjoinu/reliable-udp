@@ -146,11 +146,7 @@ class SocketDispatcher(bufferSize: Int) : Thread("SocketDispatcher-${nextDispatc
 
         buffer.flip()
 
-        // when allocating byte buffer follow the next rule: if data.size < ~1400 bytes - use on heap buffer, else - use off heap buffer. Why? Because it's faster.
-        val data = if (size < ALLOCATION_THRESHOLD_BYTES)
-            ByteBuffer.allocate(size)
-        else
-            ByteBuffer.allocateDirect(size)
+        val data = ByteBuffer.allocate(size)
 
         data.put(buffer)
         data.flip()
