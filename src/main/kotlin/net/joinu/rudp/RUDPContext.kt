@@ -1,7 +1,5 @@
 package net.joinu.rudp
 
-import net.joinu.nioudp.QueuedDatagramPacket
-import net.joinu.nioudp.RepairBlock
 import net.joinu.wirehair.Wirehair
 import sun.nio.ch.DirectBuffer
 import java.nio.ByteBuffer
@@ -12,7 +10,8 @@ abstract class RUDPSendContext(
     val threadId: UUID,
     val packet: QueuedDatagramPacket,
     val repairBlockSizeBytes: Int,
-    val exit: RUDPSendContext.() -> Boolean
+    val exit: RUDPSendContext.() -> Boolean,
+    val complete: RUDPSendContext.() -> Unit
 ) {
     var blockId: Int = 0
     var lastGetRepairBlocksTimestamp: Long = 0
@@ -31,9 +30,10 @@ class EncodingRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
     repairBlockSizeBytes: Int,
-    exit: RUDPSendContext.() -> Boolean
+    exit: RUDPSendContext.() -> Boolean,
+    complete: RUDPSendContext.() -> Unit
 ) :
-    RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit) {
+    RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete) {
 
     private val encoder: Wirehair.Encoder
 
@@ -85,9 +85,10 @@ class DummyRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
     repairBlockSizeBytes: Int,
-    exit: RUDPSendContext.() -> Boolean
+    exit: RUDPSendContext.() -> Boolean,
+    complete: RUDPSendContext.() -> Unit
 ) :
-    RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit) {
+    RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete) {
 
     override fun destroy() {}
 
@@ -156,20 +157,21 @@ class DummyRUDPReceiveContext(threadId: UUID) : RUDPReceiveContext(threadId) {
 
 class RUDPContextManager {
     private val sendContexts = mutableMapOf<UUID, RUDPSendContext>()
-    private val receiveContexts = mutableMapOf<UUID, RUDPReceiveContext>()
+    private val receiveContexts = mutableMapOf<UUID, Pair<Long, RUDPReceiveContext>>()
     private val finishedReceiveContexts = LinkedList<Pair<Long, UUID>>()
 
     fun createOrGetSendContext(
         threadId: UUID,
         packet: QueuedDatagramPacket,
         repairBlockSizeBytes: Int,
-        exit: RUDPSendContext.() -> Boolean
+        exit: RUDPSendContext.() -> Boolean,
+        complete: RUDPSendContext.() -> Unit
     ) =
         sendContexts.getOrPut(threadId) {
             if (packet.data.limit() > repairBlockSizeBytes)
-                EncodingRUDPSendContext(threadId, packet, repairBlockSizeBytes, exit)
+                EncodingRUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete)
             else
-                DummyRUDPSendContext(threadId, packet, repairBlockSizeBytes, exit)
+                DummyRUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete)
         }
 
     fun destroySendContext(threadId: UUID): RUDPSendContext? {
@@ -179,27 +181,48 @@ class RUDPContextManager {
 
     fun sendContextExists(threadId: UUID) = sendContexts.containsKey(threadId)
 
+    fun getSendContext(threadId: UUID) = sendContexts[threadId]
+
     fun getAllSendContexts() = sendContexts.values
 
-    fun destroyAllExitedSendContexts(): List<UUID> {
+    fun destroyAllExitedSendContexts() {
         val ids = sendContexts.values.filter { it.exit(it) }.map { it.threadId }
         ids.forEach { destroySendContext(it) }
-
-        return ids
     }
 
     fun createOrGetReceiveContext(threadId: UUID, messageSizeBytes: Int, repairBlockSizeBytes: Int) =
         receiveContexts.getOrPut(threadId) {
             if (messageSizeBytes == repairBlockSizeBytes)
-                DummyRUDPReceiveContext(threadId)
+                System.currentTimeMillis() to DummyRUDPReceiveContext(threadId)
             else
-                DecodingRUDPReceiveContext(threadId, messageSizeBytes, repairBlockSizeBytes)
-        }
+                System.currentTimeMillis() to DecodingRUDPReceiveContext(
+                    threadId,
+                    messageSizeBytes,
+                    repairBlockSizeBytes
+                )
+        }.second
 
     fun destroyReceiveContext(threadId: UUID): RUDPReceiveContext? {
-        receiveContexts[threadId]?.destroy()
-        return receiveContexts.remove(threadId)
+        receiveContexts[threadId]?.second?.destroy()
+        return receiveContexts.remove(threadId)?.second
     }
+
+    fun destroyAllForbiddenReceiveContexts(cleanUpTimeoutMs: Long) {
+        val now = System.currentTimeMillis()
+        val ids = receiveContexts.entries.filter { it.value.first + cleanUpTimeoutMs > now }.map { it.key }
+
+        ids.forEach { destroyReceiveContext(it) }
+    }
+
+    fun updateReceiveContext(threadId: UUID) {
+        if (!receiveContexts.containsKey(threadId))
+            return
+
+        val context = receiveContexts[threadId]!!
+        receiveContexts[threadId] = System.currentTimeMillis() to context.second
+    }
+
+    fun getReceiveContext(threadId: UUID) = receiveContexts[threadId]
 
     fun receiveContextExists(threadId: UUID) = receiveContexts.containsKey(threadId)
 
@@ -210,10 +233,12 @@ class RUDPContextManager {
         finishedReceiveContexts.addFirst(now to threadId)
     }
 
+    fun isReceiveContextFinished(threadId: UUID) = finishedReceiveContexts.any { it.second == threadId }
+
     fun cleanUpFinishedReceiveContexts(cleanUpTimeoutMs: Long) {
         val now = System.currentTimeMillis()
 
-        while (finishedReceiveContexts.peekLast().first + cleanUpTimeoutMs >= now)
+        while (finishedReceiveContexts.isNotEmpty() && finishedReceiveContexts.peekLast().first + cleanUpTimeoutMs >= now)
             finishedReceiveContexts.removeLast()
     }
 }

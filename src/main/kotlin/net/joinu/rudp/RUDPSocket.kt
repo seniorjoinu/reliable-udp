@@ -1,17 +1,15 @@
 package net.joinu.rudp
 
-import kotlinx.coroutines.delay
 import mu.KotlinLogging
-import net.joinu.nioudp.*
 import net.joinu.wirehair.Wirehair
-import sun.nio.ch.DirectBuffer
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.nio.channels.DatagramChannel
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
-class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
+class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
     companion object {
         var count = 0
 
@@ -20,14 +18,62 @@ class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
         }
     }
 
-    val sendQueue = ConcurrentLinkedQueue<Pair<QueuedDatagramPacket, () -> Boolean>>()
-    val receiveQueue = ConcurrentLinkedQueue<Pair<QueuedDatagramPacket, () -> Boolean>>()
-
     private val logger = KotlinLogging.logger("RUDPSocket-${++count}")
 
-    val contextManager = RUDPContextManager()
-    val socket = QueuedUDPSocket(mtuBytes)
-    val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
+    /* --- High-level RUDP stuff --- */
+
+    private val sendQueue =
+        ConcurrentLinkedQueue<Triple<QueuedDatagramPacket, RUDPSendContext.() -> Boolean, RUDPSendContext.() -> Unit>>()
+    private val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
+    private val contextManager = RUDPContextManager()
+    private val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
+
+    /**
+     * Adds data in processing queue for send.
+     *
+     * @param data [ByteBuffer] - normalized (flipped) data
+     * @param to [InetSocketAddress] - address to send data to
+     * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is canceled
+     * @param complete lambda returning [Void] - called when send is completed successfully
+     */
+    fun send(
+        data: ByteBuffer,
+        to: InetSocketAddress,
+        stop: RUDPSendContext.() -> Boolean = { false },
+        complete: RUDPSendContext.() -> Unit = {}
+    ) {
+        sendQueue.add(Triple(QueuedDatagramPacket(data, to), stop, complete))
+    }
+
+    /**
+     * Tries to retrieve some data from receive queue.
+     *
+     * @return optional [QueuedDatagramPacket] - if there is a data returns packet, otherwise - null
+     */
+    fun receive() = if (receiveQueue.isEmpty()) null else receiveQueue.remove()
+
+    /**
+     * Runs processing loop once.
+     *
+     * Loop consists of three stages:
+     *  1. Clean up
+     *  2. Processing send
+     *  3. Processing receive
+     */
+    fun runOnce() {
+        // clean up
+        contextManager.cleanUpFinishedReceiveContexts(cleanUpTimeoutMs)
+        contextManager.destroyAllForbiddenReceiveContexts(cleanUpTimeoutMs)
+        contextManager.destroyAllExitedSendContexts()
+
+        // send
+        prepareSend()
+        processSend()
+
+        // receive
+        val blocks = prepareReceive()
+        processReceive(blocks)
+    }
 
     private fun processSend() {
         val contexts = contextManager.getAllSendContexts()
@@ -36,145 +82,104 @@ class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
             .filter { it.isCongestionControlTimeoutElapsed(10) } // TODO: get from CC
             .map { it.getNextWindowSizeRepairBlocks(repairBlockSizeBytes * 2) to it.packet.address } // TODO: get from CC
             .forEach { (blocks, to) ->
-                blocks.forEach { } // TODO: send
+                blocks.forEach { block ->
+                    val serializedBlock = block.serialize()
+                    write(serializedBlock, to)
+                }
             }
     }
 
     private fun prepareSend() {
-        contextManager.destroyAllExitedSendContexts()
-            .forEach { AckEventHub.unsubscribeBlockAck(it) }
-
-        sendQueue.forEach { (packet, exit) ->
+        sendQueue.forEach { (packet, exit, complete) ->
             val threadId = UUID.randomUUID()
 
             logger.trace { "Transmission for threadId: $threadId is started" }
 
-            val context = contextManager.createOrGetSendContext(threadId, packet, repairBlockSizeBytes) {
-                exit() || ackReceived
-            }
-
-            AckEventHub.subscribeAck(threadId) {
-                context.ackReceived = true
-                logger.trace { "Received ACK for threadId: $threadId, stopping..." }
-                AckEventHub.unsubscribeAck(threadId)
-            }
-
-            AckEventHub.subscribeBlockAck(threadId) { /* TODO: handle congestion control tune */ }
+            contextManager.createOrGetSendContext(
+                threadId,
+                packet,
+                repairBlockSizeBytes,
+                { exit() || ackReceived },
+                complete
+            )
         }
     }
 
-    fun send(data: ByteBuffer, to: InetSocketAddress, stop: () -> Boolean = { false }) {
-        sendQueue.add(QueuedDatagramPacket(data, to) to stop)
-    }
+    private fun prepareReceive(): List<Pair<RepairBlock, InetSocketAddress>> {
+        val packets = mutableListOf<QueuedDatagramPacket>()
+        while (true) {
+            val packet = read()
+                ?: break
 
-    suspend fun listen(on: InetSocketAddress) {
-        socket.listen(on)
+            packets.add(packet)
+        }
 
-        listenLoop@ while (true) {
-            val packet = socket.receiveBlocking { socket.isClosed() } // "!!" means that I'm going to wait forever
-
-            if (packet == null) {
-                logger.trace { "Socket is closed, exiting..." }
-                return
-            }
-
-            val (bytes, from) = packet
-
-            when (parseFlag(bytes)) {
+        return packets.mapNotNull { packet ->
+            when (parseFlag(packet.data)) {
                 Flags.ACK -> {
-                    val ack = parseAck(bytes)
+                    val ack = parseAck(packet.data)
 
-                    logger.trace { "Received ACK message for threadId: ${ack.threadId} from: $from" }
+                    logger.trace { "Received ACK message for threadId: ${ack.threadId} from: ${packet.address}" }
 
-                    AckEventHub.fireAck(ack)
+                    if (!contextManager.sendContextExists(ack.threadId))
+                        return@mapNotNull null
+
+                    val context = contextManager.getSendContext(ack.threadId)!!
+
+                    context.ackReceived = true
+
+                    logger.trace { "Received ACK for threadId: ${ack.threadId}, stopping..." }
+
+                    context.complete(context)
+
+                    null
                 }
                 Flags.BLOCK_ACK -> {
-                    val blockAck = parseBlockAck(bytes)
+                    val blockAck = parseBlockAck(packet.data)
 
-                    logger.trace { "Received BLOCK_ACK message for threadId: ${blockAck.threadId} from: $from" }
+                    logger.trace { "Received BLOCK_ACK message for threadId: ${blockAck.threadId} from: ${packet.address}" }
 
-                    AckEventHub.fireBlockAck(blockAck)
+                    /* TODO: handle congestion control tune */
+
+                    null
                 }
                 Flags.REPAIR -> {
-                    val block = parseRepairBlock(bytes)
+                    val block = parseRepairBlock(packet.data)
 
-                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: $from" }
+                    logger.trace { "Received REPAIR_BLOCK message for threadId: ${block.threadId} blockId: ${block.blockId} from: ${packet.address}" }
 
-                    if (storage.isThreadConsideredReceived(block.threadId)) {
-                        logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
-                        sendAck(block.threadId, from)
-                        continue@listenLoop
-                    } else if (!storage.isReceiveThreadInProcess(block.threadId)) {
-                        storage.receiveThreadStart(from, block.threadId)
-                    }
-
-                    sendBlockAck(block.threadId, block.blockId, from)
-
-                    val message = tryToRecover(block) ?: continue@listenLoop
-
-                    storage.receiveThreadEnd(block.threadId)
-
-                    sendAck(block.threadId, from)
-
-                    logger.trace { "Invoking onMessage handler" }
-                    onMessageHandler.invoke(message, from)
+                    block to packet.address
                 }
-                else -> logger.error { "Received invalid type of message" }
+                else -> null
             }
         }
     }
 
-    /**
-     * Closes this socket - after this you should create another one to work with
-     */
-    fun close() {
-        socket.close()
-    }
+    private fun processReceive(blocks: List<Pair<RepairBlock, InetSocketAddress>>) {
+        blocks.forEach { (block, from) ->
+            val threadId = block.threadId
 
-    /**
-     * Set message handler
-     *
-     * @param handler [NetworkMessageHandler] - lambda which will be executed when we receive some message
-     */
-    fun onMessage(handler: NetworkMessageHandler) {
-        logger.trace { "onMessage handler set" }
-
-        onMessageHandler = handler
-    }
-
-    private suspend fun tryToRecover(block: RepairBlock): ByteBuffer? {
-        if (block.messageSizeBytes == block.blockSizeBytes)
-            return block.data
-
-        val (decoder, decoderMutex) = if (storage.getDecoder(block.threadId) == null)
-            storage.putDecoder(block)
-        else
-            storage.getDecoder(block.threadId)!!
-
-        decoderMutex.lock()
-
-        if (storage.getDecoder(block.threadId) != null) {
-            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
-
-            if (!enough) {
-                decoderMutex.unlock()
-                return null
+            val context = if (contextManager.isReceiveContextFinished(block.threadId)) {
+                logger.trace { "Received a repair block for already received threadId: ${block.threadId}, skipping..." }
+                sendAck(threadId, from)
+                return@forEach
+            } else {
+                contextManager.createOrGetReceiveContext(threadId, block.messageSizeBytes, block.blockSizeBytes)
             }
 
-            val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
-            decoder.recover(message as DirectBuffer, block.messageSizeBytes)
+            contextManager.updateReceiveContext(threadId)
 
-            storage.removeDecoder(block.threadId)
+            sendBlockAck(threadId, block.blockId, from)
 
-            decoderMutex.unlock()
+            val message = context.tryToRecoverFrom(block) ?: return@forEach
 
-            return message
+            contextManager.markReceiveContextAsFinished(threadId)
+            contextManager.destroyReceiveContext(threadId)
+
+            sendAck(threadId, from)
+
+            receiveQueue.add(QueuedDatagramPacket(message, from))
         }
-
-        if (decoderMutex.isLocked)
-            decoderMutex.unlock()
-
-        return null
     }
 
     private fun sendAck(threadId: UUID, to: InetSocketAddress) {
@@ -182,7 +187,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
 
         val ack = Ack(threadId, 0F) // TODO: get from congestion index
 
-        socket.send(ack.serialize(), to)
+        write(ack.serialize(), to)
     }
 
     private fun sendBlockAck(threadId: UUID, blockId: Int, to: InetSocketAddress) {
@@ -190,7 +195,7 @@ class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
 
         val blockAck = BlockAck(threadId, blockId, 0F) // TODO: get from congestion index
 
-        socket.send(blockAck.serialize(), to)
+        write(blockAck.serialize(), to)
     }
 
     private fun parseRepairBlock(buffer: ByteBuffer) = RepairBlock.deserialize(buffer)
@@ -198,83 +203,76 @@ class RUDPSocket(mtuBytes: Int, cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
     private fun parseBlockAck(buffer: ByteBuffer) = BlockAck.deserialize(buffer)
     private fun parseFlag(buffer: ByteBuffer) = buffer.get()
 
-    private suspend fun sendEncodingLoop(
-        data: ByteBuffer,
-        to: InetSocketAddress,
-        repairBlockBuffer: ByteBuffer,
-        threadId: UUID,
-        stop: () -> Boolean
-    ) {
-        val buffer = ByteBuffer.allocateDirect(data.limit())
-        buffer.put(data)
+    /* --- Low-level plain UDP stuff --- */
+
+    private var channel = DatagramChannel.open()
+    private val buffer = ByteBuffer.allocateDirect(repairBlockSizeBytes)
+    private var state = SocketState.UNBOUND
+
+    init {
+        channel.configureBlocking(false)
+    }
+
+    /**
+     * Binds to the local address. Before this call you're unable to receive packets.
+     *
+     * @param on [InetSocketAddress] - address to bind
+     */
+    fun bind(on: InetSocketAddress) = synchronized(state) {
+        throwIfClosed()
+        channel.bind(on)
+        state = SocketState.BOUND
+    }
+
+    /**
+     * Closes this socket - after this you should create another one to work with
+     */
+    fun close() = synchronized(state) {
+        channel.close()
+        state = SocketState.CLOSED
+    }
+
+    /**
+     * Get socket state
+     *
+     * @return [SocketState]
+     */
+    fun getState() = state
+
+    /**
+     * Is socket closed
+     *
+     * @return [Boolean]
+     */
+    fun isClosed() = state == SocketState.CLOSED
+
+    private fun write(data: ByteBuffer, address: InetSocketAddress) = synchronized(state) {
+        throwIfClosed()
+        channel.send(data, address)
+    }
+
+    private fun read(): QueuedDatagramPacket? = synchronized(state) {
+        throwIfNotBound()
+        val remoteAddress = channel.receive(buffer)
+
+        if (buffer.position() == 0) return null
+
+        val size = buffer.position()
+
         buffer.flip()
 
-        val encoder = Wirehair.Encoder(buffer as DirectBuffer, buffer.limit(), repairBlockSizeBytes)
+        val data = ByteBuffer.allocate(size)
+
+        data.put(buffer)
+        data.flip()
 
         buffer.clear()
 
-        var blockId = 1
+        val from = InetSocketAddress::class.java.cast(remoteAddress)
 
-        while (!stop()) {
-            val windowSize = repairBlockSizeBytes * 2 // TODO: get from congestion control
-            val k = windowSize / repairBlockSizeBytes + 1
-            val prevWindowBlockId = blockId
-
-            while (blockId <= prevWindowBlockId + k) {
-                val writeLen = encoder.encode(blockId, repairBlockBuffer as DirectBuffer, repairBlockSizeBytes)
-
-                val repairBlock = RepairBlock(
-                    repairBlockBuffer,
-                    writeLen,
-                    threadId,
-                    blockId,
-                    data.limit(),
-                    repairBlockSizeBytes,
-                    0, 0f, 0f // TODO: get from congestion control
-                )
-                logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
-
-                socket.send(repairBlock.serialize(), to)
-
-                repairBlockBuffer.clear()
-
-                blockId++
-            }
-
-            logger.trace { "Sleeping for CCT" }
-            delay(1) // TODO: sleep congestion control timeout
-        }
-
-        encoder.close()
+        QueuedDatagramPacket(data, from)
     }
 
-    private suspend fun sendDummyLoop(data: ByteBuffer, to: InetSocketAddress, threadId: UUID, stop: () -> Boolean) {
-        var blockId = 1
-
-        while (!stop()) {
-            val k = 1
-            val prevWindowBlockId = blockId
-
-            while (blockId <= prevWindowBlockId + k) {
-
-                val repairBlock = RepairBlock(
-                    data,
-                    data.limit(),
-                    threadId,
-                    blockId,
-                    data.limit(),
-                    data.limit(),
-                    0, 0f, 0f // TODO: get from congestion control
-                )
-                logger.trace { "Sending REPAIR_BLOCK threadId: $threadId, blockId: $blockId to $to" }
-
-                socket.send(repairBlock.serialize(), to)
-
-                blockId++
-            }
-
-            logger.trace { "Sleeping for CCT" }
-            delay(1) // TODO: sleep congestion control timeout
-        }
-    }
+    private fun throwIfNotBound() = check(state == SocketState.BOUND) { "Socket should be BOUND" }
+    private fun throwIfClosed() = check(state != SocketState.CLOSED) { "Socket is closed" }
 }

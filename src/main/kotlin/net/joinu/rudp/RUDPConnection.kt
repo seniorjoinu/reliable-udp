@@ -1,6 +1,5 @@
 package net.joinu.rudp
 
-import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.rudp.cma.CongestionIndex
 import java.net.InetSocketAddress
 import kotlin.math.roundToInt

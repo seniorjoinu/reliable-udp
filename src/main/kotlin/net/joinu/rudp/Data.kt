@@ -1,56 +1,14 @@
-package net.joinu.nioudp
+package net.joinu.rudp
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
 
-typealias NetworkMessageHandler = suspend (buffer: ByteBuffer, from: InetSocketAddress) -> Unit
-
 enum class SocketState {
-    UNBOUND, BOUND, LISTENING, CLOSED
+    UNBOUND, BOUND, CLOSED
 }
 
-const val MAX_CHUNK_SIZE_BYTES = 65_507
 const val RECOMMENDED_CHUNK_SIZE_BYTES = 504
-const val DATA_SIZE_BYTES = 4
-
-typealias AckConsumer = (ack: Ack) -> Unit
-typealias BlockAckConsumer = (blockAck: BlockAck) -> Unit
-
-object AckEventHub {
-    val ackSubscribers = mutableMapOf<UUID, AckConsumer>()
-
-    fun subscribeAck(threadId: UUID, block: AckConsumer) {
-        ackSubscribers[threadId] = block
-    }
-
-    fun unsubscribeAck(threadId: UUID) {
-        ackSubscribers.remove(threadId)
-    }
-
-    fun fireAck(ack: Ack) {
-        ackSubscribers[ack.threadId]?.invoke(ack)
-    }
-
-    val blockAckSubscribers = mutableMapOf<UUID, BlockAckConsumer>()
-
-    fun subscribeBlockAck(threadId: UUID, block: BlockAckConsumer) {
-        blockAckSubscribers[threadId] = block
-    }
-
-    fun unsubscribeBlockAck(threadId: UUID) {
-        blockAckSubscribers.remove(threadId)
-    }
-
-    fun fireBlockAck(blockAck: BlockAck) {
-        blockAckSubscribers[blockAck.threadId]?.invoke(blockAck)
-    }
-}
-
-/**
- * Exception thrown when TRT exceeds
- */
-class TransmissionTimeoutException(message: String) : RuntimeException(message)
 
 object Flags {
     const val ACK: Byte = 0
@@ -184,3 +142,5 @@ data class RepairBlock(
 
 const val FLOAT_SIZE_BYTES = 8
 const val UUID_SIZE_BYTES = 16
+
+data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)

@@ -5,6 +5,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.RUDPSocket
+import net.joinu.rudp.receiveBlocking
+import net.joinu.rudp.runBlocking
+import net.joinu.rudp.sendBlocking
 import org.junit.jupiter.api.RepeatedTest
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -13,7 +16,7 @@ import java.nio.ByteBuffer
 class RUDPSocketTest {
     init {
         //System.setProperty("jna.debug_load", "true")
-        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
     @RepeatedTest(100)
@@ -34,128 +37,133 @@ class RUDPSocketTest {
             val net1Content = ByteArray(1000) { it.toByte() }
 
             val rudp1 = RUDPSocket(508)
+            rudp1.bind(net1Addr)
+
             val rudp2 = RUDPSocket(508)
-
-            launch(Dispatchers.IO) {
-                rudp1.listen(net1Addr)
-            }
-
-            launch(Dispatchers.IO) {
-                rudp2.listen(net2Addr)
-            }
+            rudp2.bind(net2Addr)
 
             val n = 100
 
             var receive1 = 1
-            rudp2.onMessage { buffer, from ->
-                receive1++
+            var sent1 = 1
+            var receive2 = 1
+            var sent2 = 1
+
+            val timeout = 1000000L
+
+            val exitCondition = sent1 >= n && receive1 >= n && sent2 >= n && receive2 >= n
+
+            launch(Dispatchers.IO) {
+                rudp1.runBlocking { exitCondition }
             }
 
-            var sent1 = 1
+            launch(Dispatchers.IO) {
+                rudp2.runBlocking { exitCondition }
+            }
+
             for (i in (0 until n)) {
                 launch(Dispatchers.IO) {
-                    rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
+                    rudp1.sendBlocking(net1Content.toDirectByteBuffer(), net2Addr, timeout)
                     sent1++
                 }
-            }
-
-            var receive2 = 1
-            rudp1.onMessage { buffer, from ->
-                receive2++
-            }
-
-            var sent2 = 1
-            for (i in (0 until n)) {
+                launch {
+                    rudp2.receiveBlocking(timeout)
+                    receive2++
+                }
                 launch(Dispatchers.IO) {
                     rudp2.send(net1Content.toDirectByteBuffer(), net1Addr)
                     sent2++
                 }
+                launch {
+                    rudp1.receiveBlocking(timeout)
+                    receive1++
+                }
             }
 
             while (true) {
-                if (sent1 >= n && receive1 >= n && sent2 >= n && receive2 >= n) {
-                    delay(100)
+                if (exitCondition) {
+                    delay(1000)
 
                     rudp1.close()
                     rudp2.close()
                     break
                 }
-                delay(100)
+                delay(10)
                 println("$sent1, $receive1, $sent2, $receive2")
             }
         }
     }
 
     fun `single send-receive works fine`(dataSize: Int, mtu: Int) {
-        runBlocking {
-            val before = System.currentTimeMillis()
+        /* runBlocking {
+             val before = System.currentTimeMillis()
 
-            val net1Addr = InetSocketAddress("localhost", 1337)
-            val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(dataSize) { it.toByte() }
-            val net2Content = ByteArray(dataSize) { (100000 - it).toByte() }
+             val net1Addr = InetSocketAddress("localhost", 1337)
+             val net2Addr = InetSocketAddress("localhost", 1338)
+             val net1Content = ByteArray(dataSize) { it.toByte() }
+             val net2Content = ByteArray(dataSize) { (100000 - it).toByte() }
 
-            val rudp1 = RUDPSocket(mtu)
-            val rudp2 = RUDPSocket(mtu)
+             val rudp1 = RUDPSocket(mtu)
+             val rudp2 = RUDPSocket(mtu)
 
-            launch(Dispatchers.IO) {
-                rudp1.listen(net1Addr)
-            }
-            launch(Dispatchers.IO) {
-                rudp2.listen(net2Addr)
-            }
+             launch(Dispatchers.IO) {
+                 rudp1.listen(net1Addr)
+             }
+             launch(Dispatchers.IO) {
+                 rudp2.listen(net2Addr)
+             }
 
-            var sent1 = false
-            var receive1 = false
-            var sent2 = false
-            var receive2 = false
+             var sent1 = false
+             var receive1 = false
+             var sent2 = false
+             var receive2 = false
 
-            rudp1.onMessage { buffer, from ->
-                val bytes = ByteArray(buffer.limit())
-                buffer.get(bytes)
+             rudp1.onMessage { buffer, from ->
+                 val bytes = ByteArray(buffer.limit())
+                 buffer.get(bytes)
 
-                println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
+                 println("Net1 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                 assert(bytes.contentEquals(net2Content)) { "Content is invalid" }
 
-                val after = System.currentTimeMillis()
-                println("2->1 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
+                 val after = System.currentTimeMillis()
+                 println("2->1 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
 
-                receive1 = true
-            }
+                 receive1 = true
+             }
 
-            rudp2.onMessage { buffer, from ->
-                val bytes = ByteArray(buffer.limit())
-                buffer.get(bytes)
+             rudp2.onMessage { buffer, from ->
+                 val bytes = ByteArray(buffer.limit())
+                 buffer.get(bytes)
 
-                println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
-                assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
+                 println("Net2 received ${bytes.joinToString { String.format("%02X", it) }} from $from")
+                 assert(bytes.contentEquals(net1Content)) { "Content is invalid" }
 
-                val after = System.currentTimeMillis()
-                println("1->2 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
+                 val after = System.currentTimeMillis()
+                 println("1->2 Transmission of ${dataSize / 1024f} kb took ${after - before} ms locally")
 
-                receive2 = true
-            }
+                 receive2 = true
+             }
 
-            launch {
-                rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
-                sent1 = true
-            }
-            launch {
-                rudp2.send(net2Content.toDirectByteBuffer(), net1Addr)
-                sent2 = true
-            }
+             launch {
+                 rudp1.send(net1Content.toDirectByteBuffer(), net2Addr)
+                 sent1 = true
+             }
+             launch {
+                 rudp2.send(net2Content.toDirectByteBuffer(), net1Addr)
+                 sent2 = true
+             }
 
-            while (true) {
-                if (sent1 && sent2 && receive1 && receive2) {
-                    delay(100)
+             while (true) {
+                 if (sent1 && sent2 && receive1 && receive2) {
+                     delay(100)
 
-                    rudp1.close()
-                    rudp2.close()
-                    break
-                }
-                delay(1)
-            }
-        }
+                     rudp1.close()
+                     rudp2.close()
+                     break
+                 }
+                 delay(1)
+             }
+         }*/
     }
 }
 

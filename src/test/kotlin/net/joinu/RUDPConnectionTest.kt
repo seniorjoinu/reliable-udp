@@ -1,6 +1,6 @@
 package net.joinu
 
-import net.joinu.nioudp.RECOMMENDED_CHUNK_SIZE_BYTES
+import net.joinu.rudp.RECOMMENDED_CHUNK_SIZE_BYTES
 import net.joinu.rudp.RUDPConnection
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
