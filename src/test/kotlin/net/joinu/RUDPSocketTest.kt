@@ -7,8 +7,9 @@ import kotlinx.coroutines.runBlocking
 import net.joinu.rudp.RUDPSocket
 import net.joinu.rudp.receiveBlocking
 import net.joinu.rudp.runBlocking
-import net.joinu.rudp.sendBlocking
+import net.joinu.rudp.send
 import org.junit.jupiter.api.RepeatedTest
+import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
@@ -34,7 +35,7 @@ class RUDPSocketTest {
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
             val net2Addr = InetSocketAddress("localhost", 1338)
-            val net1Content = ByteArray(1000) { it.toByte() }
+            val net1Content = ByteArray(5000) { it.toByte() }
 
             val rudp1 = RUDPSocket(508)
             rudp1.bind(net1Addr)
@@ -42,7 +43,7 @@ class RUDPSocketTest {
             val rudp2 = RUDPSocket(508)
             rudp2.bind(net2Addr)
 
-            val n = 100
+            val n = 10
 
             var receive1 = 1
             var sent1 = 1
@@ -51,46 +52,62 @@ class RUDPSocketTest {
 
             val timeout = 1000000L
 
-            val exitCondition = sent1 >= n && receive1 >= n && sent2 >= n && receive2 >= n
-
-            launch(Dispatchers.IO) {
-                rudp1.runBlocking { exitCondition }
-            }
-
-            launch(Dispatchers.IO) {
-                rudp2.runBlocking { exitCondition }
-            }
+            val exitCondition: () -> Boolean = { sent1 > n && receive1 > n && sent2 > n && receive2 > n }
 
             for (i in (0 until n)) {
-                launch(Dispatchers.IO) {
-                    rudp1.sendBlocking(net1Content.toDirectByteBuffer(), net2Addr, timeout)
+                rudp1.send(net1Content.toDirectByteBuffer(), net2Addr) {
                     sent1++
                 }
-                launch {
+
+                rudp2.send(net1Content.toDirectByteBuffer(), net1Addr) {
+                    sent2++
+                }
+
+                launch(Dispatchers.IO) {
                     rudp2.receiveBlocking(timeout)
                     receive2++
                 }
+
                 launch(Dispatchers.IO) {
-                    rudp2.send(net1Content.toDirectByteBuffer(), net1Addr)
-                    sent2++
-                }
-                launch {
                     rudp1.receiveBlocking(timeout)
                     receive1++
                 }
             }
 
             while (true) {
-                if (exitCondition) {
-                    delay(1000)
-
+                if (exitCondition()) {
                     rudp1.close()
                     rudp2.close()
                     break
                 }
-                delay(10)
+                rudp1.runOnce()
+                rudp2.runOnce()
+                delay(100)
                 println("$sent1, $receive1, $sent2, $receive2")
             }
+        }
+    }
+
+    @Test
+    fun `simple test`() {
+        runBlocking {
+            val net1Addr = InetSocketAddress("localhost", 1337)
+            val net2Addr = InetSocketAddress("localhost", 1338)
+            val net1Content = ByteArray(1000) { it.toByte() }
+
+            val rudp1 = RUDPSocket(508)
+            rudp1.bind(net1Addr)
+
+            val rudp2 = RUDPSocket(508)
+            rudp2.bind(net2Addr)
+
+            launch(Dispatchers.IO) { rudp1.runBlocking() }
+            launch(Dispatchers.IO) { rudp2.runBlocking() }
+
+            rudp1.send(net1Content, net2Addr)
+            val data = rudp2.receiveBlocking(10000)
+
+            println()
         }
     }
 

@@ -2,12 +2,11 @@ package net.joinu.rudp
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.*
 import java.util.concurrent.TimeoutException
 
 
 fun RUDPSocket.runBlocking(exit: () -> Boolean = { false }) {
-    while (!exit()) {
+    while (!exit() || !isClosed()) {
         runOnce()
     }
 }
@@ -45,26 +44,23 @@ fun RUDPSocket.sendBlocking(data: ByteArray, to: InetSocketAddress, timeoutMs: L
 
 @Throws(TimeoutException::class)
 fun RUDPSocket.sendBlocking(data: ByteBuffer, to: InetSocketAddress, timeoutMs: Long) {
-    val start = System.currentTimeMillis()
-    var sent = false
-    var timeouted = false
-    var threadIdOut: UUID? = null
+    /* val start = System.currentTimeMillis()
+     var sent = false
+     var timeouted = false
 
-    val stopLambda: RUDPSendContext.() -> Boolean = {
-        if (start + timeoutMs > System.currentTimeMillis()) {
-            timeouted = true
-            threadIdOut = threadId
-        }
+     val stopLambda: RUDPSendContext.() -> Boolean = {
+         if (start + timeoutMs > System.currentTimeMillis())
+             timeouted = true
 
-        timeouted
-    }
+         timeouted
+     }
 
-    send(data, to, stopLambda) { sent = true }
+     send(data, to, stopLambda) { sent = true }
 
-    while (!sent) {
-        if (timeouted)
-            throw TimeoutException("Send fot $threadIdOut timed out")
-    }
+     while (!sent) {
+         if (timeouted)
+             throw TimeoutException("Send timed out")
+     }*/
 }
 
 @Throws(TimeoutException::class)
@@ -77,7 +73,7 @@ fun RUDPSocket.receiveBlocking(timeoutMs: Long): QueuedDatagramPacket {
         if (packet != null)
             return packet
 
-        if (start + timeoutMs > System.currentTimeMillis())
+        if (start + timeoutMs < System.currentTimeMillis())
             throw TimeoutException("Unable to receive any packet")
     }
 }

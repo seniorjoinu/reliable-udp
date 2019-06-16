@@ -22,11 +22,11 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
 
     /* --- High-level RUDP stuff --- */
 
-    private val sendQueue =
+    val sendQueue =
         ConcurrentLinkedQueue<Triple<QueuedDatagramPacket, RUDPSendContext.() -> Boolean, RUDPSendContext.() -> Unit>>()
-    private val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
-    private val contextManager = RUDPContextManager()
-    private val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
+    val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
+    val contextManager = RUDPContextManager()
+    val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
 
     /**
      * Adds data in processing queue for send.
@@ -50,7 +50,7 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
      *
      * @return optional [QueuedDatagramPacket] - if there is a data returns packet, otherwise - null
      */
-    fun receive() = if (receiveQueue.isEmpty()) null else receiveQueue.remove()
+    fun receive() = receiveQueue.poll()
 
     /**
      * Runs processing loop once.
@@ -79,18 +79,29 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
         val contexts = contextManager.getAllSendContexts()
 
         contexts.asSequence()
-            .filter { it.isCongestionControlTimeoutElapsed(10) } // TODO: get from CC
+            .filter { it.isCongestionControlTimeoutElapsed(300) } // TODO: get from CC
             .map { it.getNextWindowSizeRepairBlocks(repairBlockSizeBytes * 2) to it.packet.address } // TODO: get from CC
             .forEach { (blocks, to) ->
                 blocks.forEach { block ->
-                    val serializedBlock = block.serialize()
-                    write(serializedBlock, to)
+                    logger.trace { "Sending REPAIR_BLOCK threadId: ${block.threadId} blockId: ${block.blockId}" }
+                    block.serialize(sendBuffer)
+                    write(sendBuffer, to)
                 }
             }
     }
 
     private fun prepareSend() {
-        sendQueue.forEach { (packet, exit, complete) ->
+        val sendQueueCopy =
+            mutableListOf<Triple<QueuedDatagramPacket, RUDPSendContext.() -> Boolean, RUDPSendContext.() -> Unit>>()
+
+        while (true) {
+            val packet = sendQueue.poll()
+                ?: break
+
+            sendQueueCopy.add(packet)
+        }
+
+        sendQueueCopy.forEach { (packet, exit, complete) ->
             val threadId = UUID.randomUUID()
 
             logger.trace { "Transmission for threadId: $threadId is started" }
@@ -99,7 +110,7 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
                 threadId,
                 packet,
                 repairBlockSizeBytes,
-                { exit() || ackReceived },
+                exit,
                 complete
             )
         }
@@ -119,8 +130,6 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
                 Flags.ACK -> {
                     val ack = parseAck(packet.data)
 
-                    logger.trace { "Received ACK message for threadId: ${ack.threadId} from: ${packet.address}" }
-
                     if (!contextManager.sendContextExists(ack.threadId))
                         return@mapNotNull null
 
@@ -131,6 +140,7 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
                     logger.trace { "Received ACK for threadId: ${ack.threadId}, stopping..." }
 
                     context.complete(context)
+                    contextManager.destroySendContext(context.threadId)
 
                     null
                 }
@@ -187,7 +197,9 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
 
         val ack = Ack(threadId, 0F) // TODO: get from congestion index
 
-        write(ack.serialize(), to)
+        ack.serialize(sendBuffer)
+
+        write(sendBuffer, to)
     }
 
     private fun sendBlockAck(threadId: UUID, blockId: Int, to: InetSocketAddress) {
@@ -195,7 +207,9 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
 
         val blockAck = BlockAck(threadId, blockId, 0F) // TODO: get from congestion index
 
-        write(blockAck.serialize(), to)
+        blockAck.serialize(sendBuffer)
+
+        write(sendBuffer, to)
     }
 
     private fun parseRepairBlock(buffer: ByteBuffer) = RepairBlock.deserialize(buffer)
@@ -206,7 +220,8 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
     /* --- Low-level plain UDP stuff --- */
 
     private var channel = DatagramChannel.open()
-    private val buffer = ByteBuffer.allocateDirect(repairBlockSizeBytes)
+    private val sendBuffer = ByteBuffer.allocateDirect(mtuBytes)
+    private val receiveBuffer = ByteBuffer.allocateDirect(mtuBytes)
     private var state = SocketState.UNBOUND
 
     init {
@@ -247,26 +262,31 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
     fun isClosed() = state == SocketState.CLOSED
 
     private fun write(data: ByteBuffer, address: InetSocketAddress) = synchronized(state) {
+        logger.trace { "Sending ${data.limit()} bytes to $address" }
         throwIfClosed()
         channel.send(data, address)
+
+        data.clear()
     }
 
     private fun read(): QueuedDatagramPacket? = synchronized(state) {
         throwIfNotBound()
-        val remoteAddress = channel.receive(buffer)
+        val remoteAddress = channel.receive(receiveBuffer)
 
-        if (buffer.position() == 0) return null
+        if (receiveBuffer.position() == 0) return null
 
-        val size = buffer.position()
+        val size = receiveBuffer.position()
 
-        buffer.flip()
+        receiveBuffer.flip()
+
+        logger.trace { "Receiving $size bytes from $remoteAddress" }
 
         val data = ByteBuffer.allocate(size)
 
-        data.put(buffer)
+        data.put(receiveBuffer)
         data.flip()
 
-        buffer.clear()
+        receiveBuffer.clear()
 
         val from = InetSocketAddress::class.java.cast(remoteAddress)
 

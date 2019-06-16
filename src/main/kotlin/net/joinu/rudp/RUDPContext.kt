@@ -1,6 +1,7 @@
 package net.joinu.rudp
 
 import net.joinu.wirehair.Wirehair
+import net.joinu.wirehair.WirehairException
 import sun.nio.ch.DirectBuffer
 import java.nio.ByteBuffer
 import java.util.*
@@ -56,7 +57,7 @@ class EncodingRUDPSendContext(
         val repairBlocks = mutableListOf<RepairBlock>()
 
         while (blockId <= prevWindowBlockId + k) {
-            val repairBlockBuffer = ByteBuffer.allocate(repairBlockSizeBytes)
+            val repairBlockBuffer = ByteBuffer.allocateDirect(repairBlockSizeBytes)
 
             val writeLen = encoder.encode(blockId, repairBlockBuffer as DirectBuffer, repairBlockSizeBytes)
 
@@ -135,14 +136,18 @@ class DecodingRUDPReceiveContext(threadId: UUID, messageSizeBytes: Int, repairBl
     }
 
     override fun tryToRecoverFrom(block: RepairBlock): ByteBuffer? {
-        val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
+        try {
+            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
 
-        if (!enough) return null
+            if (!enough) return null
 
-        val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
-        decoder.recover(message as DirectBuffer, block.messageSizeBytes)
+            val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
+            decoder.recover(message as DirectBuffer, block.messageSizeBytes)
 
-        return message
+            return message
+        } catch (e: WirehairException) {
+            return null
+        }
     }
 }
 

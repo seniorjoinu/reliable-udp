@@ -30,17 +30,13 @@ data class Ack(val threadId: UUID, val congestionIndex: Float) {
         }
     }
 
-    fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocate(SIZE_BYTES)
-
+    fun serialize(buffer: ByteBuffer) {
         buffer.put(Flags.ACK)
             .putLong(threadId.mostSignificantBits)
             .putLong(threadId.leastSignificantBits)
             .putFloat(congestionIndex)
 
         buffer.flip()
-
-        return buffer
     }
 }
 
@@ -59,9 +55,7 @@ data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: F
         }
     }
 
-    fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocate(SIZE_BYTES)
-
+    fun serialize(buffer: ByteBuffer) {
         buffer.put(Flags.BLOCK_ACK)
             .putLong(threadId.mostSignificantBits)
             .putLong(threadId.leastSignificantBits)
@@ -69,8 +63,6 @@ data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: F
             .putFloat(congestionIndex)
 
         buffer.flip()
-
-        return buffer
     }
 }
 
@@ -87,7 +79,7 @@ data class RepairBlock(
 ) {
     companion object {
         const val METADATA_SIZE_BYTES =
-            Int.SIZE_BYTES * 5 + UUID_SIZE_BYTES + Byte.SIZE_BYTES + FLOAT_SIZE_BYTES * 2 + Short.SIZE_BYTES
+            Int.SIZE_BYTES * 4 + UUID_SIZE_BYTES + Byte.SIZE_BYTES + FLOAT_SIZE_BYTES * 2 + Short.SIZE_BYTES
 
         fun deserialize(buffer: ByteBuffer): RepairBlock {
             val threadId1 = buffer.long
@@ -100,7 +92,7 @@ data class RepairBlock(
             val lossRate = buffer.float
             val congestionIndex = buffer.float
             val writeLen = buffer.int
-            val data = ByteBuffer.allocateDirect(writeLen)
+            val data = ByteBuffer.allocateDirect(blockBytes)
             data.put(buffer)
             data.flip()
 
@@ -118,9 +110,7 @@ data class RepairBlock(
         }
     }
 
-    fun serialize(): ByteBuffer {
-        val buffer = ByteBuffer.allocate(actualBlockSizeBytes + METADATA_SIZE_BYTES)
-
+    fun serialize(buffer: ByteBuffer) {
         data.limit(actualBlockSizeBytes)
         buffer.put(Flags.REPAIR)
             .putLong(threadId.mostSignificantBits)
@@ -135,8 +125,6 @@ data class RepairBlock(
             .put(data)
 
         buffer.flip()
-
-        return buffer
     }
 }
 
