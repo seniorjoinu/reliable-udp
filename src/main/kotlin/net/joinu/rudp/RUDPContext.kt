@@ -1,7 +1,6 @@
 package net.joinu.rudp
 
 import net.joinu.wirehair.Wirehair
-import net.joinu.wirehair.WirehairException
 import sun.nio.ch.DirectBuffer
 import java.nio.ByteBuffer
 import java.util.*
@@ -23,7 +22,7 @@ abstract class RUDPSendContext(
 
     fun isCongestionControlTimeoutElapsed(congestionControlTimeoutMs: Long): Boolean {
         val now = System.currentTimeMillis()
-        return lastGetRepairBlocksTimestamp + now >= congestionControlTimeoutMs
+        return lastGetRepairBlocksTimestamp + congestionControlTimeoutMs < now
     }
 }
 
@@ -61,8 +60,6 @@ class EncodingRUDPSendContext(
 
             val writeLen = encoder.encode(blockId, repairBlockBuffer as DirectBuffer, repairBlockSizeBytes)
 
-            blockId++
-
             val repairBlock = RepairBlock(
                 repairBlockBuffer,
                 writeLen,
@@ -74,6 +71,8 @@ class EncodingRUDPSendContext(
             )
 
             repairBlocks.add(repairBlock)
+
+            blockId++
         }
 
         lastGetRepairBlocksTimestamp = System.currentTimeMillis()
@@ -100,7 +99,6 @@ class DummyRUDPSendContext(
         val repairBlocks = mutableListOf<RepairBlock>()
 
         while (blockId <= prevWindowBlockId + k) {
-            blockId++
 
             val repairBlock = RepairBlock(
                 packet.data,
@@ -113,6 +111,8 @@ class DummyRUDPSendContext(
             )
 
             repairBlocks.add(repairBlock)
+
+            blockId++
         }
 
         lastGetRepairBlocksTimestamp = System.currentTimeMillis()
@@ -136,18 +136,14 @@ class DecodingRUDPReceiveContext(threadId: UUID, messageSizeBytes: Int, repairBl
     }
 
     override fun tryToRecoverFrom(block: RepairBlock): ByteBuffer? {
-        try {
-            val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
+        val enough = decoder.decode(block.blockId, block.data as DirectBuffer, block.actualBlockSizeBytes)
 
-            if (!enough) return null
+        if (!enough) return null
 
-            val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
-            decoder.recover(message as DirectBuffer, block.messageSizeBytes)
+        val message = ByteBuffer.allocateDirect(block.messageSizeBytes)
+        decoder.recover(message as DirectBuffer, block.messageSizeBytes)
 
-            return message
-        } catch (e: WirehairException) {
-            return null
-        }
+        return message
     }
 }
 
@@ -214,7 +210,7 @@ class RUDPContextManager {
 
     fun destroyAllForbiddenReceiveContexts(cleanUpTimeoutMs: Long) {
         val now = System.currentTimeMillis()
-        val ids = receiveContexts.entries.filter { it.value.first + cleanUpTimeoutMs > now }.map { it.key }
+        val ids = receiveContexts.entries.filter { it.value.first + cleanUpTimeoutMs < now }.map { it.key }
 
         ids.forEach { destroyReceiveContext(it) }
     }
@@ -243,7 +239,7 @@ class RUDPContextManager {
     fun cleanUpFinishedReceiveContexts(cleanUpTimeoutMs: Long) {
         val now = System.currentTimeMillis()
 
-        while (finishedReceiveContexts.isNotEmpty() && finishedReceiveContexts.peekLast().first + cleanUpTimeoutMs >= now)
+        while (finishedReceiveContexts.isNotEmpty() && finishedReceiveContexts.peekLast().first + cleanUpTimeoutMs < now)
             finishedReceiveContexts.removeLast()
     }
 }

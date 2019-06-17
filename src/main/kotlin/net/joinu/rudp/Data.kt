@@ -92,7 +92,7 @@ data class RepairBlock(
             val lossRate = buffer.float
             val congestionIndex = buffer.float
             val writeLen = buffer.int
-            val data = ByteBuffer.allocateDirect(blockBytes)
+            val data = ByteBuffer.allocateDirect(writeLen)
             data.put(buffer)
             data.flip()
 
