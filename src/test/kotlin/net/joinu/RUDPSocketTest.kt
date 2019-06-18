@@ -13,9 +13,10 @@ import java.nio.ByteBuffer
 class RUDPSocketTest {
     init {
         //System.setProperty("jna.debug_load", "true")
-        //System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
+        System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
+    // this one is very slow, because you need 700+ blocks to restore initial message for 1MB message
     @Test
     fun `different data sizes transmit well`() {
         val rudp1 = RUDPSocket(1400)
