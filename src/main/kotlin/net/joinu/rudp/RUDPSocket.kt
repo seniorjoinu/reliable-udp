@@ -3,7 +3,6 @@ package net.joinu.rudp
 import mu.KotlinLogging
 import net.joinu.wirehair.Wirehair
 import java.net.InetSocketAddress
-import java.net.StandardSocketOptions
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
@@ -227,8 +226,6 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
 
     init {
         channel.configureBlocking(false)
-        channel.setOption(StandardSocketOptions.SO_SNDBUF, Int.MAX_VALUE)
-        channel.setOption(StandardSocketOptions.SO_RCVBUF, Int.MAX_VALUE)
     }
 
     /**
