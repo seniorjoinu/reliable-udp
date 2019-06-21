@@ -32,7 +32,7 @@ while (received < 2 && sent < 2) {
     
     // try to get data from receive queue
     val data = rudp2.receive()
-    if (data != null) received++ // if there is data - unblock, if there is no - try again
+    if (data != null) received++ // if there is data - increment, if there is no - try again
 }
 
 println("Data transmitted")
