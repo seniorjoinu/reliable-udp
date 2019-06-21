@@ -60,11 +60,11 @@ rudp2.close()
 #### Algorithm in short words
 1. Sender adds data to the send queue `socket.send(data, address)`
 2. When `socket.runOnce()` is invoked
-    i. Source data is transformed into small portion of repair packets
-    ii. Repair packets are written to DatagramSocket sequentially
-    iii. If there are packets to read from DatagramSocket they are read
-    iv. For each read repair packet it tries to restore source data
-    v. If data is restored completely, ACK packet sent back to sender and data is added to the receive queue
+    1. Source data is transformed into small portion of repair packets
+    2. Repair packets are written to DatagramSocket sequentially
+    3. If there are packets to read from DatagramSocket they are read
+    4. For each read repair packet it tries to restore source data
+    5. If data is restored completely, ACK packet sent back to sender and data is added to the receive queue
 3. Receiver tries to receive data from the receive queue `socket.receive()`
 
 #### API Reference
