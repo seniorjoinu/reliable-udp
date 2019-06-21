@@ -9,25 +9,30 @@
 val rudp1 = RUDPSocket()
 val rudp2 = RUDPSocket()
                     
-val net1Addr = InetSocketAddress("localhost", 1337)
-val net2Addr = InetSocketAddress("localhost", 1338)
+val net1Addr = InetSocketAddress(1337)
+val net2Addr = InetSocketAddress(1338)
 
 // bind to some address                                
 rudp1.bind(net1Addr)
 rudp2.bind(net2Addr)
 
 // send some content
+var sent = 0
+
 val net1Content = ByteArray(20000) { it.toByte() }
-rudp1.send(net1Content.toDirectByteBuffer(), net2Addr) // non-blocking code, provides callbacks, adds data to send queue
+rudp1.send(net1Content, net2Addr) { sent++ } // non-blocking code, provides callbacks, adds data to send queue
+rudp1.send(net1Content, net2Addr) { sent++ } // send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
+
+var received = 0
 
 // there is no blocking "listen" or "run" - you can block your threads in a way you like
-while (true) {
+while (received < 2 && sent < 2) {
     rudp1.runOnce() // processes data if it available
     rudp2.runOnce()
     
     // try to get data from receive queue
-    val k = rudp2.receive()
-    if (k != null) break // if there is data - unblock, if there is no - try again
+    val data = rudp2.receive()
+    if (data != null) received++ // if there is data - unblock, if there is no - try again
 }
 
 println("Data transmitted")
@@ -37,33 +42,142 @@ rudp1.close()
 rudp2.close()
 ```
 
-### Abstract
+### What's inside
 
-##### What is fec?
-FEC stands for Forward Error Correction - technique that uses erasure codes to recover missed data after transmission.
-Let's suppose you have N chunks of data that you want to transfer to your friend via unreliable transport. You know that
-your transport can have no more but 33% packet loss rate. Using FEC you encode N chunks of data into 4N/3 chunks of data
-to prevent it from loss and send all these chunks to your friend. Your friend receives from N to 4N/3 of chunks due to
-packet loss, but that's enough. He now can recover original N chunks just from what he's got. So, your transport protocol
-can implement no ARQ technique but be as reliable as you want.
+1. The main idea is to provide super-flexible and super-fast reliable udp transport that is easy to use.
+2. Design is something like [event loop](https://en.wikipedia.org/wiki/Event_loop) that you can control. 
+    So no billion threads/coroutines until you really want it. RUDP is thread-safe and supports multiplexing by default.
+3. It uses [fountain codes](https://en.wikipedia.org/wiki/Fountain_code) so no real 
+    [ARQ](https://en.wikipedia.org/wiki/Automatic_repeat_request) is performed. This makes RUDP (in theory) superior 
+    to TCP and maybe to [kcp](https://github.com/skywind3000/kcp).
+4. API is almost the same as in standard DatagramSocket. There is no connections and other boring stuff (actually 
+    there are, but they are inside). MTU, WINDOW_SIZE and other stuff is configurable as 
+    in [kcp](https://github.com/skywind3000/kcp).
+5. RUDPSocket uses only one port to receive and send data.
 
-FEC is kinda old concept and it evolves just like any other good technique. The most recent improvement in this field is
-called Fountain Codes. The main feature of this improvement is infinite number of repair chunks that you can create for
-your constant-sized data. Let's suppose the same situation with you and your friend from above, but now packet loss rate
-is unknown - it can be 10% or 90%, or 99% - this is very natural for real networks. In this situation using Fountain Codes 
-you can constantly send your friend repair blocks - they never end. When your friend receives enough (most of the times - N)
-repair chunks, he responds you with just one ACK saying that he completely received your data and you can finish transmission
-from your side.
+// TODO: add AWS benchmarks
 
-##### Best fountain codes
-I surfed github and google a lot, but found only one library that I really like. 
-It called [catid/wirehair](https://github.com/catid/wirehair).
-What I really like about it is it's speed and clear API - Christopher is a really good developer.
+#### Algorithm in short words
+1. Sender adds data to the send queue `socket.send(data, address)`
+2. When `socket.runOnce()` is invoked
+    i. Source data is transformed into small portion of repair packets
+    ii. Repair packets are written to DatagramSocket sequentially
+    iii. If there are packets to read from DatagramSocket they are read
+    iv. For each read repair packet it tries to restore source data
+    v. If data is restored completely, ACK packet sent back to sender and data is added to the receive queue
+3. Receiver tries to receive data from the receive queue `socket.receive()`
 
-I've written a Kotlin wrapper for it [seniorjoinu/wirehair-wrapper](https://github.com/seniorjoinu/wirehair-wrapper)
+#### API Reference
+```kotlin
+/**
+ * The socket itself. Just create one of those and use it to send and receive data over the network.
+ *
+ * @param mtuBytes [Int] - minimum MTU of all those router between you and someone you send data to
+ * @param windowSizeBytes [Int] - pieces of data are sent in small groups with total size of this value
+ * @param congestionControlTimeoutMs [Long] - after each group of [windowSizeBytes] is sent, socket waits until
+ *  [congestionControlTimeoutMs] elapsed before sending another [windowSizeBytes] of that data
+ * @param cleanUpTimeoutMs [Long] - the lesser this value is, the more frequent socket will clean up itself
+ */
+class RUDPSocket(
+    val mtuBytes: Int = 1200,
+    val windowSizeBytes: Int = 4800,
+    val congestionControlTimeoutMs: Long = 100,
+    val cleanUpTimeoutMs: Long = 1000 * 60 * 10
+)
+
+/**
+ * Binds to the local address. Before this call you're unable to receive packets.
+ *
+ * @param on [InetSocketAddress] - address to bind
+ */
+fun bind(on: InetSocketAddress)
+
+/**
+ * Destroys all contexts and closes this socket - after this you should create another one to work with
+ */
+fun close()
+
+/**
+ * Is socket closed
+ *
+ * @return [Boolean]
+ */
+fun isClosed(): Boolean
+
+/**
+ * Adds data in processing queue for send.
+ *
+ * @param data [ByteBuffer] - normalized (flipped) data
+ * @param to [InetSocketAddress] - address to send data to
+ * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is
+ *  canceled
+ * @param complete lambda returning [Void] - called when send is completed successfully (if sending is canceled,
+ *  this callback is not executed)
+ */
+fun RUDPSocket.send(
+    data: ByteBuffer, 
+    to: InetSocketAddress, 
+    stop: ExitCallback = { false }, 
+    complete: CompleteCallback = {}
+)
+
+/**
+ * [RUDPSocket.send] but instead of [ByteBuffer] it sends [ByteArray]
+ *
+ * @param data [ByteArray] - input data
+ * @param to [InetSocketAddress] - receiver
+ * @param dataSizeBytes [Int] - if not specified [ByteArray.size] will be used
+ * @param exit [ExitCallback]
+ * @param complete [CompleteCallback]
+ */
+fun RUDPSocket.send(
+    data: ByteArray,
+    to: InetSocketAddress,
+    dataSizeBytes: Int = 0,
+    exit: ExitCallback = { false },
+    complete: CompleteCallback = {}
+)
+
+/**
+ * Tries to retrieve some data from receive queue.
+ *
+ * @return [QueuedDatagramPacket] - if there is a data returns packet, otherwise - [null]
+ */
+fun RUDPSocket.receive(): QueuedDatagramPacket?
+
+/**
+ * Blocks current thread until it receives something from the socket.
+ *
+ * @param timeoutMs [Long] - if not specified runs forever
+ *
+ * @return [QueuedDatagramPacket]
+ * @throws [TimeoutException]
+ */
+@Throws(TimeoutException::class)
+fun RUDPSocket.receiveBlocking(timeoutMs: Long = 0): QueuedDatagramPacket
+
+/**
+ * Runs processing loop once.
+ *
+ * Loop consists of three stages:
+ *  1. Clean up
+ *  2. Processing send
+ *  3. Processing receive
+ */
+fun runOnce()
+
+/**
+ * Blocks current thread running [RUDPSocket]'s processing loop until [exit] condition is met.
+ *
+ * @param exit lambda () -> [Boolean] - when returns true processing loop completes (it still be run after)
+ */
+fun RUDPSocket.runBlocking(exit: () -> Boolean = { false })
+```
 
 ### Installation
+
 Use [Jitpack](https://jitpack.io/)
 
-### Help
-Submit an issue or suggest a PR
+For example usage see [integration-example-project](https://github.com/seniorjoinu/reliable-udp-integration).
+
+For advanced usage see [seniorjoinu/prodigy](https://github.com/seniorjoinu/prodigy).

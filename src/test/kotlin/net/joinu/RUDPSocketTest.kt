@@ -22,8 +22,8 @@ class RUDPSocketTest {
         val rudp2 = RUDPSocket()
 
         runBlocking {
-            val net1Addr = InetSocketAddress("localhost", 1337)
-            val net2Addr = InetSocketAddress("localhost", 1338)
+            val net1Addr = InetSocketAddress(1337)
+            val net2Addr = InetSocketAddress(1338)
 
             rudp1.bind(net1Addr)
             rudp2.bind(net2Addr)
@@ -69,8 +69,8 @@ class RUDPSocketTest {
 
     @Test
     fun `multiple concurrent sends-receives work fine single-threaded`() {
-        val net1Addr = InetSocketAddress("localhost", 1337)
-        val net2Addr = InetSocketAddress("localhost", 1338)
+        val net1Addr = InetSocketAddress(1337)
+        val net2Addr = InetSocketAddress(1338)
 
         val rudp1 = RUDPSocket()
         rudp1.bind(net1Addr)
@@ -127,8 +127,8 @@ class RUDPSocketTest {
         val rudp2 = RUDPSocket()
 
         runBlocking {
-            val net1Addr = InetSocketAddress("localhost", 1337)
-            val net2Addr = InetSocketAddress("localhost", 1338)
+            val net1Addr = InetSocketAddress(1337)
+            val net2Addr = InetSocketAddress(1338)
 
             rudp1.bind(net1Addr)
             rudp2.bind(net2Addr)
