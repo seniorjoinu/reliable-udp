@@ -175,9 +175,11 @@ fun RUDPSocket.runBlocking(exit: () -> Boolean = { false })
 ```
 
 ### Installation
-
 Use [Jitpack](https://jitpack.io/)
 
-For example usage see [integration-example-project](https://github.com/seniorjoinu/reliable-udp-integration).
+### Examples
+For example usage in other app see [integration-example-project](https://github.com/seniorjoinu/reliable-udp-integration)
 
-For advanced usage see [seniorjoinu/prodigy](https://github.com/seniorjoinu/prodigy).
+For advanced usage see [seniorjoinu/prodigy](https://github.com/seniorjoinu/prodigy)
+
+Also see `test` dir in this repo
