@@ -1,20 +1,45 @@
 ## Reliable UDP
 
 [![Build Status](https://travis-ci.com/seniorjoinu/reliable-udp.svg?branch=master)](https://travis-ci.com/seniorjoinu/reliable-udp)
+[![](https://jitpack.io/v/seniorjoinu/reliable-udp.svg)](https://jitpack.io/#seniorjoinu/reliable-udp)
 
-Reliable UDP for Kotlin using `Wirehair` fountain codes and coroutines
+Multiplexed, concurrency model agnostic reliable UDP for Kotlin using fountain codes.
+
+### Quick example
+```kotlin
+// create a pair of sockets
+val rudp1 = RUDPSocket()
+val rudp2 = RUDPSocket()
+                    
+val net1Addr = InetSocketAddress("localhost", 1337)
+val net2Addr = InetSocketAddress("localhost", 1338)
+
+// bind to some address                                
+rudp1.bind(net1Addr)
+rudp2.bind(net2Addr)
+
+// send some content
+val net1Content = ByteArray(20000) { it.toByte() }
+rudp1.send(net1Content.toDirectByteBuffer(), net2Addr) // non-blocking code, provides callbacks, adds data to send queue
+
+// there is no blocking "listen" or "run" - you can block your threads in a way you like
+while (true) {
+    rudp1.runOnce() // processes data if it available
+    rudp2.runOnce()
+    
+    // try to get data from receive queue
+    val k = rudp2.receive()
+    if (k != null) break // if there is data - unblock, if there is no - try again
+}
+
+println("Data transmitted")
+
+// close sockets, free resources
+rudp1.close()
+rudp2.close()
+```
 
 ### Abstract
-##### Why TCP is bad?
-TCP was designed to provide maximum throughput but not to provide minimum latency:
-1. When packet loss occurs TCP retransmits COMPLETE message again
-2. ARQ RTO is `latency*2` but when packet loss occurs it can become `latency*8`
-
-I also personally do not like TCP design:
-1. It is stream-oriented
-2. It is forcing you to handle these awful `Connection` objects by yourself
-
-So, my goal is to develop nano-latency easy-to-use transport.
 
 ##### What is fec?
 FEC stands for Forward Error Correction - technique that uses erasure codes to recover missed data after transmission.

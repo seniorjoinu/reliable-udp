@@ -248,6 +248,17 @@ class RUDPContextManager {
         ids.forEach { destroyReceiveContext(it) }
     }
 
+    /**
+     * Called before socket is closed
+     */
+    fun destroyAllContexts() {
+        val receiveThreadIds = receiveContexts.keys
+        receiveThreadIds.forEach { destroyReceiveContext(it) }
+
+        val sendThreadIds = sendContexts.keys
+        sendThreadIds.forEach { destroySendContext(it) }
+    }
+
     fun updateReceiveContext(threadId: UUID) {
         if (!receiveContexts.containsKey(threadId))
             return

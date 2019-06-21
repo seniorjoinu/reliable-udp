@@ -254,9 +254,11 @@ class RUDPSocket(
     }
 
     /**
-     * Closes this socket - after this you should create another one to work with
+     * Destroys all contexts and closes this socket - after this you should create another one to work with
      */
     fun close() = synchronized(state) {
+        contextManager.destroyAllContexts()
+
         channel.close()
         state = SocketState.CLOSED
     }
