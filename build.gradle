@@ -1,6 +1,6 @@
 buildscript {
-    ext.kotlin_version = "1.3.20"
-    ext.coroutines_version = "1.1.1"
+    ext.kotlin_version = "1.3.31"
+    ext.coroutines_version = "1.2.1"
     ext.wirehair_wrapper_version = "0.2.5"
 
     repositories {
@@ -15,7 +15,7 @@ buildscript {
 apply plugin: 'kotlin' 
 
 group 'com.joinu'
-version '1.0-SNAPSHOT'
+version '0.2'
 
 repositories {
     mavenCentral()
@@ -36,10 +36,10 @@ artifacts {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
     implementation "com.github.seniorjoinu:wirehair-wrapper:$wirehair_wrapper_version"
     implementation 'io.github.microutils:kotlin-logging:1.6.24'
 
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.3.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.3.1'
     testImplementation group: 'org.slf4j', name: 'slf4j-simple', version: '1.7.26'
