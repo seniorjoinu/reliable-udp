@@ -183,3 +183,7 @@ For example usage in other app see [integration-example-project](https://github.
 For advanced usage see [seniorjoinu/prodigy](https://github.com/seniorjoinu/prodigy)
 
 Also see `test` dir in this repo
+
+### Contribution
+If you want to improve RUDP but don't know where to start, there is a [project](https://github.com/seniorjoinu/reliable-udp/projects/1).
+Pick any task you like and propose a PR.
