@@ -3,8 +3,6 @@
 [![Build Status](https://travis-ci.com/seniorjoinu/reliable-udp.svg?branch=master)](https://travis-ci.com/seniorjoinu/reliable-udp)
 [![](https://jitpack.io/v/seniorjoinu/reliable-udp.svg)](https://jitpack.io/#seniorjoinu/reliable-udp)
 
-Multiplexed, concurrency model agnostic reliable UDP for Kotlin using fountain codes.
-
 ### Quick example
 ```kotlin
 // create a pair of sockets
@@ -66,50 +64,6 @@ I've written a Kotlin wrapper for it [seniorjoinu/wirehair-wrapper](https://gith
 
 ### Installation
 Use [Jitpack](https://jitpack.io/)
-
-### Example
-Right now there is only one (*configurable*) implementation of `RUDPSocket`.
-```kotlin
-// coroutines so use proper context
-runBlocking {
-    // set addresses
-    val net1Addr = InetSocketAddress("localhost", 1337)
-    val net2Addr = InetSocketAddress("localhost", 1338)
-    
-    // create some message
-    val net1Content = ByteArray(100000) { it.toByte() }
-    
-    // create and bind sockets (1400 - is MTU)
-    val rudp1 = ConfigurableRUDPSocket(1400)
-    rudp1.bind(net1Addr)
-    
-    val rudp2 = ConfigurableRUDPSocket(1400)
-    rudp2.bind(net2Addr)
-
-    // start listening for messages
-    launch(Dispatchers.IO) { rudp1.listen() }
-    // you should always bind and listen on socket
-    launch(Dispatchers.IO) { rudp2.listen() }
-
-    // add callback to execute come code when message received
-    rudp2.onMessage { buffer, from ->
-        val bytes = ByteArray(buffer.limit())
-        buffer.get(bytes)
-
-        rudp2.close()
-    }
-
-    // send message asynchronously
-    launch {
-        rudp1.send(
-            net1Content.toDirectByteBuffer(),
-            net2Addr,
-            fctTimeoutMsProvider = { 50 },
-            windowSizeProvider = { 1400 }
-        )
-    }
-}
-```
 
 ### Help
 Submit an issue or suggest a PR
