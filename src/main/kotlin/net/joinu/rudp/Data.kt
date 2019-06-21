@@ -1,21 +1,36 @@
 package net.joinu.rudp
 
+import net.joinu.rudp.SocketState.*
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
 
+/**
+ * Socket is created in [UNBOUND] state.
+ * After [RUDPSocket.bind] call it becomes [BOUND].
+ * After [RUDPSocket.close] call in becomes [CLOSED].
+ *
+ * Socket state change is a [synchronized] operation.
+ * When state is [UNBOUND], you can only [RUDPSocket.bind].
+ * When state is [BOUND], you can [RUDPSocket.runOnce], [RUDPSocket.send], [RUDPSocket.receive] and [RUDPSocket.close].
+ * When state is [CLOSED] you just can't.
+ */
 enum class SocketState {
     UNBOUND, BOUND, CLOSED
 }
 
-const val RECOMMENDED_CHUNK_SIZE_BYTES = 504
-
+/**
+ * Flags which mark each possible type of data packet transmitted.
+ */
 object Flags {
     const val ACK: Byte = 0
     const val REPAIR: Byte = 1
     const val BLOCK_ACK: Byte = 2
 }
 
+/**
+ * Representation of the ACK packet. It is sent by the receiver to the sender when receiver is able to recover the input data.
+ */
 data class Ack(val threadId: UUID, val congestionIndex: Float) {
     companion object {
         const val SIZE_BYTES = UUID_SIZE_BYTES + FLOAT_SIZE_BYTES
@@ -40,6 +55,10 @@ data class Ack(val threadId: UUID, val congestionIndex: Float) {
     }
 }
 
+/**
+ * Representation of the BLOCK_ACK packet. It is optional and will only be used for transmission of some additional
+ * congestion control data.
+ */
 data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: Float) {
     companion object {
         const val SIZE_BYTES = UUID_SIZE_BYTES + Int.SIZE_BYTES + FLOAT_SIZE_BYTES
@@ -66,6 +85,9 @@ data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: F
     }
 }
 
+/**
+ * Representation of REPAIR packet. It is sent by the sender to the receiver for each chunk of input data.
+ */
 data class RepairBlock(
     val data: ByteBuffer,
     val actualBlockSizeBytes: Int,
@@ -128,7 +150,11 @@ data class RepairBlock(
     }
 }
 
+// Some missing data sizes.
 const val FLOAT_SIZE_BYTES = 8
 const val UUID_SIZE_BYTES = 16
 
 data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)
+typealias ExitCallback = RUDPSendContext.() -> Boolean
+typealias CompleteCallback = RUDPSendContext.() -> Unit
+typealias PacketAndCallbacks = Triple<QueuedDatagramPacket, ExitCallback, CompleteCallback>

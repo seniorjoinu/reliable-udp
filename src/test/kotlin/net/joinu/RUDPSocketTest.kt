@@ -12,15 +12,14 @@ import java.nio.ByteBuffer
 
 class RUDPSocketTest {
     init {
-        //System.setProperty("jna.debug_load", "true")
         System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
-    // this one is very slow, because you need 700+ blocks to restore initial message for 1MB message
+    // this one is very slow, because of congestion control timeout
     @Test
     fun `different data sizes transmit well`() {
-        val rudp1 = RUDPSocket(1400)
-        val rudp2 = RUDPSocket(1400)
+        val rudp1 = RUDPSocket()
+        val rudp2 = RUDPSocket()
 
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)
@@ -73,10 +72,10 @@ class RUDPSocketTest {
         val net1Addr = InetSocketAddress("localhost", 1337)
         val net2Addr = InetSocketAddress("localhost", 1338)
 
-        val rudp1 = RUDPSocket(1400)
+        val rudp1 = RUDPSocket()
         rudp1.bind(net1Addr)
 
-        val rudp2 = RUDPSocket(1400)
+        val rudp2 = RUDPSocket()
         rudp2.bind(net2Addr)
 
         val n = 100
@@ -124,8 +123,8 @@ class RUDPSocketTest {
 
     @Test
     fun `multiple concurrent sends-receives work fine mutli-threaded`() {
-        val rudp1 = RUDPSocket(1400)
-        val rudp2 = RUDPSocket(1400)
+        val rudp1 = RUDPSocket()
+        val rudp2 = RUDPSocket()
 
         runBlocking {
             val net1Addr = InetSocketAddress("localhost", 1337)

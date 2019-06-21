@@ -6,18 +6,29 @@ import java.nio.ByteBuffer
 import java.util.*
 
 
+/**
+ * Send context is responsible for block supply for each send thread.
+ * It is created when input data retrieved from the send queue, and destroyed when the transmission of that data
+ * completes or exit condition is met.
+ *
+ * @param threadId [UUID] - each thread is represents the process of the transmission of some input data
+ * @param packet [QueuedDatagramPacket] - the same as [java.net.DatagramPacket] but with [ByteBuffer] for data
+ * @param repairBlockSizeBytes [Int] - how much bytes there are in repair block without it's metadata
+ * @param exit [ExitCallback] - when this lambda return true, send context will destroy itself
+ * @param complete [CompleteCallback] - when we receive [Ack] for this [threadId], we execute this lambda and destroy
+ */
 abstract class RUDPSendContext(
     val threadId: UUID,
     val packet: QueuedDatagramPacket,
     val repairBlockSizeBytes: Int,
-    val exit: RUDPSendContext.() -> Boolean,
-    val complete: RUDPSendContext.() -> Unit
+    val exit: ExitCallback,
+    val complete: CompleteCallback
 ) {
     var blockId: Int = 0
     var lastGetRepairBlocksTimestamp: Long = 0
     var ackReceived: Boolean = false
 
-    abstract fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int): List<RepairBlock>
+    abstract fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int, mtuBytes: Int): List<RepairBlock>
     abstract fun destroy()
 
     fun isCongestionControlTimeoutElapsed(congestionControlTimeoutMs: Long): Boolean {
@@ -26,14 +37,16 @@ abstract class RUDPSendContext(
     }
 }
 
+/**
+ * This send context is using FEC encoded blocks for data transmission
+ */
 class EncodingRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
     repairBlockSizeBytes: Int,
     exit: RUDPSendContext.() -> Boolean,
     complete: RUDPSendContext.() -> Unit
-) :
-    RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete) {
+) : RUDPSendContext(threadId, packet, repairBlockSizeBytes, exit, complete) {
 
     private val encoder: Wirehair.Encoder
 
@@ -49,8 +62,8 @@ class EncodingRUDPSendContext(
         encoder.close()
     }
 
-    override fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int): List<RepairBlock> {
-        val k = windowSizeBytes / repairBlockSizeBytes + 1
+    override fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int, mtuBytes: Int): List<RepairBlock> {
+        val k = windowSizeBytes / mtuBytes
         val prevWindowBlockId = blockId
 
         val repairBlocks = mutableListOf<RepairBlock>()
@@ -81,6 +94,10 @@ class EncodingRUDPSendContext(
     }
 }
 
+/**
+ * When our input data size is less than MTU there is no reason to encode anything - we can just send input data in a
+ *  single block
+ */
 class DummyRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
@@ -92,8 +109,8 @@ class DummyRUDPSendContext(
 
     override fun destroy() {}
 
-    override fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int): List<RepairBlock> {
-        val k = windowSizeBytes / repairBlockSizeBytes + 1
+    override fun getNextWindowSizeRepairBlocks(windowSizeBytes: Int, mtuBytes: Int): List<RepairBlock> {
+        val k = 3
         val prevWindowBlockId = blockId
 
         val repairBlocks = mutableListOf<RepairBlock>()
@@ -121,11 +138,21 @@ class DummyRUDPSendContext(
     }
 }
 
+/**
+ * Receive context is responsible for processing of the ingoing data packets.
+ * It is created when we receive a block of unknown [threadId] and destroyed when transmission is complete or after
+ * inactivity for some period of time [cleanUpTimeoutMs].
+ *
+ * @param threadId [UUID] - the id of the transmission thread
+ */
 abstract class RUDPReceiveContext(val threadId: UUID) {
     abstract fun tryToRecoverFrom(block: RepairBlock): ByteBuffer?
     abstract fun destroy()
 }
 
+/**
+ * This receive context is using FEC decoding to gather original data.
+ */
 class DecodingRUDPReceiveContext(threadId: UUID, messageSizeBytes: Int, repairBlockSizeBytes: Int) :
     RUDPReceiveContext(threadId) {
 
@@ -147,6 +174,9 @@ class DecodingRUDPReceiveContext(threadId: UUID, messageSizeBytes: Int, repairBl
     }
 }
 
+/**
+ * This context is used when data is to small to be FEC'ed.
+ */
 class DummyRUDPReceiveContext(threadId: UUID) : RUDPReceiveContext(threadId) {
 
     override fun destroy() {}
@@ -156,6 +186,9 @@ class DummyRUDPReceiveContext(threadId: UUID) : RUDPReceiveContext(threadId) {
     }
 }
 
+/**
+ * Manager class for all contexts within a single socket. Can create, destroy and change state of contexts.
+ */
 class RUDPContextManager {
     private val sendContexts = mutableMapOf<UUID, RUDPSendContext>()
     private val receiveContexts = mutableMapOf<UUID, Pair<Long, RUDPReceiveContext>>()

@@ -5,18 +5,32 @@ import java.nio.ByteBuffer
 import java.util.concurrent.TimeoutException
 
 
+/**
+ * Blocks current thread running [RUDPSocket]'s processing loop until [exit] condition is met.
+ *
+ * @param exit lambda () -> [Boolean] - when returns true processing loop completes (it still be run after)
+ */
 fun RUDPSocket.runBlocking(exit: () -> Boolean = { false }) {
     while (!exit()) {
         runOnce()
     }
 }
 
+/**
+ * [RUDPSocket.send] but instead of [ByteBuffer] it sends [ByteArray]
+ *
+ * @param data [ByteArray] - input data
+ * @param to [InetSocketAddress] - receiver
+ * @param dataSizeBytes [Int] - if not specified [ByteArray.size] will be used
+ * @param exit [ExitCallback]
+ * @param complete [CompleteCallback]
+ */
 fun RUDPSocket.send(
     data: ByteArray,
     to: InetSocketAddress,
     dataSizeBytes: Int = 0,
-    exit: RUDPSendContext.() -> Boolean = { false },
-    complete: RUDPSendContext.() -> Unit = {}
+    exit: ExitCallback = { false },
+    complete: CompleteCallback = {}
 ) {
     val buffer = if (dataSizeBytes == 0)
         ByteBuffer.allocate(data.size)
@@ -29,6 +43,14 @@ fun RUDPSocket.send(
     send(buffer, to, exit, complete)
 }
 
+/**
+ * Blocks current thread until it receives something from the socket.
+ *
+ * @param timeoutMs [Long] - if not specified runs forever
+ *
+ * @return [QueuedDatagramPacket]
+ * @throws [TimeoutException]
+ */
 @Throws(TimeoutException::class)
 fun RUDPSocket.receiveBlocking(timeoutMs: Long = 0): QueuedDatagramPacket {
     val start = System.currentTimeMillis()

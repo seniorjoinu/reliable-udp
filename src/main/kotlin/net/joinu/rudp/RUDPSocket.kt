@@ -9,7 +9,21 @@ import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
-class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 * 10) {
+/**
+ * The socket itself. Just create one of those and use it to send and receive data over the network.
+ *
+ * @param mtuBytes [Int] - minimum MTU of all those router between you and someone you send data to
+ * @param windowSizeBytes [Int] - pieces of data are sent in small groups with total size of this value
+ * @param congestionControlTimeoutMs [Long] - after each group of [windowSizeBytes] is sent, socket waits until
+ *  [congestionControlTimeoutMs] elapsed before sending another [windowSizeBytes] of that data
+ * @param cleanUpTimeoutMs [Long] - the lesser this value is, the more frequent socket will clean up itself
+ */
+class RUDPSocket(
+    val mtuBytes: Int = 1200,
+    val windowSizeBytes: Int = 4800,
+    val congestionControlTimeoutMs: Long = 100,
+    val cleanUpTimeoutMs: Long = 1000 * 60 * 10
+) {
     companion object {
         var count = 0
 
@@ -22,8 +36,7 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
 
     /* --- High-level RUDP stuff --- */
 
-    val sendQueue =
-        ConcurrentLinkedQueue<Triple<QueuedDatagramPacket, RUDPSendContext.() -> Boolean, RUDPSendContext.() -> Unit>>()
+    val sendQueue = ConcurrentLinkedQueue<PacketAndCallbacks>()
     val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
     val contextManager = RUDPContextManager()
     val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
@@ -33,22 +46,19 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
      *
      * @param data [ByteBuffer] - normalized (flipped) data
      * @param to [InetSocketAddress] - address to send data to
-     * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is canceled
-     * @param complete lambda returning [Void] - called when send is completed successfully
+     * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is
+     *  canceled
+     * @param complete lambda returning [Void] - called when send is completed successfully (if sending is canceled,
+     *  this callback is not executed)
      */
-    fun send(
-        data: ByteBuffer,
-        to: InetSocketAddress,
-        stop: RUDPSendContext.() -> Boolean = { false },
-        complete: RUDPSendContext.() -> Unit = {}
-    ) {
+    fun send(data: ByteBuffer, to: InetSocketAddress, stop: ExitCallback = { false }, complete: CompleteCallback = {}) {
         sendQueue.add(Triple(QueuedDatagramPacket(data, to), stop, complete))
     }
 
     /**
      * Tries to retrieve some data from receive queue.
      *
-     * @return optional [QueuedDatagramPacket] - if there is a data returns packet, otherwise - null
+     * @return [QueuedDatagramPacket] - if there is a data returns packet, otherwise - [null]
      */
     fun receive() = receiveQueue.poll()
 
@@ -79,8 +89,13 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
         val contexts = contextManager.getAllSendContexts()
 
         contexts.asSequence()
-            .filter { it.isCongestionControlTimeoutElapsed(300) } // TODO: get from CC
-            .map { it.getNextWindowSizeRepairBlocks(repairBlockSizeBytes * 2) to it.packet.address } // TODO: get from CC
+            .filter { it.isCongestionControlTimeoutElapsed(congestionControlTimeoutMs) } // TODO: get from CC
+            .map {
+                it.getNextWindowSizeRepairBlocks(
+                    windowSizeBytes,
+                    mtuBytes
+                ) to it.packet.address
+            } // TODO: get from CC
             .forEach { (blocks, to) ->
                 blocks.forEach { block ->
                     logger.trace { "Sending REPAIR_BLOCK threadId: ${block.threadId} blockId: ${block.blockId}" }
@@ -91,8 +106,7 @@ class RUDPSocket(mtuBytes: Int, private val cleanUpTimeoutMs: Long = 1000 * 60 *
     }
 
     private fun prepareSend() {
-        val sendQueueCopy =
-            mutableListOf<Triple<QueuedDatagramPacket, RUDPSendContext.() -> Boolean, RUDPSendContext.() -> Unit>>()
+        val sendQueueCopy = mutableListOf<PacketAndCallbacks>()
 
         while (true) {
             val packet = sendQueue.poll()
