@@ -4,6 +4,7 @@ import net.joinu.rudp.SocketState.*
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
+import java.util.concurrent.CompletableFuture
 
 /**
  * Socket is created in [UNBOUND] state.
@@ -155,6 +156,4 @@ const val FLOAT_SIZE_BYTES = 8
 const val UUID_SIZE_BYTES = 16
 
 data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)
-typealias ExitCallback = RUDPSendContext.() -> Boolean
-typealias CompleteCallback = RUDPSendContext.() -> Unit
-typealias PacketAndCallbacks = Triple<QueuedDatagramPacket, ExitCallback, CompleteCallback>
+typealias PacketAndFuture = Pair<QueuedDatagramPacket, CompletableFuture<RUDPSendContext>>

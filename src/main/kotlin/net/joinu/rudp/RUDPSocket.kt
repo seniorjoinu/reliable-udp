@@ -6,6 +6,7 @@ import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
@@ -36,7 +37,7 @@ class RUDPSocket(
 
     /* --- High-level RUDP stuff --- */
 
-    val sendQueue = ConcurrentLinkedQueue<PacketAndCallbacks>()
+    val sendQueue = ConcurrentLinkedQueue<PacketAndFuture>()
     val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
     val contextManager = RUDPContextManager()
     val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
@@ -46,13 +47,16 @@ class RUDPSocket(
      *
      * @param data [ByteBuffer] - normalized (flipped) data
      * @param to [InetSocketAddress] - address to send data to
-     * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is
-     *  canceled
-     * @param complete lambda returning [Void] - called when send is completed successfully (if sending is canceled,
-     *  this callback is not executed)
+     *
+     * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
+     *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
      */
-    fun send(data: ByteBuffer, to: InetSocketAddress, stop: ExitCallback = { false }, complete: CompleteCallback = {}) {
-        sendQueue.add(Triple(QueuedDatagramPacket(data, to), stop, complete))
+    fun send(data: ByteBuffer, to: InetSocketAddress): CompletableFuture<RUDPSendContext> {
+        val future = CompletableFuture<RUDPSendContext>()
+
+        sendQueue.add(Pair(QueuedDatagramPacket(data, to), future))
+
+        return future
     }
 
     /**
@@ -74,7 +78,7 @@ class RUDPSocket(
         // clean up
         contextManager.cleanUpFinishedReceiveContexts(cleanUpTimeoutMs)
         contextManager.destroyAllForbiddenReceiveContexts(cleanUpTimeoutMs)
-        contextManager.destroyAllExitedSendContexts()
+        contextManager.destroyAllCanceledSendContexts()
 
         // send
         prepareSend()
@@ -106,35 +110,27 @@ class RUDPSocket(
     }
 
     private fun prepareSend() {
-        val sendQueueCopy = mutableListOf<PacketAndCallbacks>()
+        val sendQueueCopy = mutableListOf<PacketAndFuture>()
 
         while (true) {
-            val packet = sendQueue.poll()
-                ?: break
+            val packet = sendQueue.poll() ?: break
 
             sendQueueCopy.add(packet)
         }
 
-        sendQueueCopy.forEach { (packet, exit, complete) ->
+        sendQueueCopy.forEach { (packet, future) ->
             val threadId = UUID.randomUUID()
 
             logger.trace { "Transmission for threadId: $threadId is started" }
 
-            contextManager.createOrGetSendContext(
-                threadId,
-                packet,
-                repairBlockSizeBytes,
-                exit,
-                complete
-            )
+            contextManager.createOrGetSendContext(threadId, packet, repairBlockSizeBytes, future)
         }
     }
 
     private fun prepareReceive(): List<Pair<RepairBlock, InetSocketAddress>> {
         val packets = mutableListOf<QueuedDatagramPacket>()
         while (true) {
-            val packet = read()
-                ?: break
+            val packet = read() ?: break
 
             packets.add(packet)
         }
@@ -153,7 +149,7 @@ class RUDPSocket(
 
                     logger.trace { "Received ACK for threadId: ${ack.threadId}, stopping..." }
 
-                    context.complete(context)
+                    context.future.complete(context)
                     contextManager.destroySendContext(context.threadId)
 
                     null

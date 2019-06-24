@@ -23,11 +23,10 @@ class ExampleTest {
         var sent = 0
 
         val net1Content = ByteArray(20000) { it.toByte() }
-        rudp1.send(net1Content, net2Addr) { sent++ } // non-blocking code, provides callbacks, adds data to send queue
-        rudp1.send(
-            net1Content,
-            net2Addr
-        ) { sent++ } // send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
+        // non-blocking code, adds data to send queue
+        rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
+        // send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
+        rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
 
         var received = 0
 

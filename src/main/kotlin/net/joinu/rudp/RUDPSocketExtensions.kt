@@ -2,6 +2,7 @@ package net.joinu.rudp
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeoutException
 
 
@@ -21,26 +22,17 @@ fun RUDPSocket.runBlocking(exit: () -> Boolean = { false }) {
  *
  * @param data [ByteArray] - input data
  * @param to [InetSocketAddress] - receiver
- * @param dataSizeBytes [Int] - if not specified [ByteArray.size] will be used
- * @param exit [ExitCallback]
- * @param complete [CompleteCallback]
+ *
+ * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
+ *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
  */
-fun RUDPSocket.send(
-    data: ByteArray,
-    to: InetSocketAddress,
-    dataSizeBytes: Int = 0,
-    exit: ExitCallback = { false },
-    complete: CompleteCallback = {}
-) {
-    val buffer = if (dataSizeBytes == 0)
-        ByteBuffer.allocate(data.size)
-    else
-        ByteBuffer.allocate(dataSizeBytes)
+fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): CompletableFuture<RUDPSendContext> {
+    val buffer = ByteBuffer.allocate(data.size)
 
     buffer.put(data)
     buffer.flip()
 
-    send(buffer, to, exit, complete)
+    return send(buffer, to)
 }
 
 /**

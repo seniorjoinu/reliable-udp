@@ -37,16 +37,18 @@ class RUDPSocketTest {
             }
 
             var sentSmall = false
-            rudp1.send(ByteArray(100).toDirectByteBuffer(), net2Addr) {
-                sentSmall = true
+            rudp1.send(ByteArray(100).toDirectByteBuffer(), net2Addr).handle { rudpSendContext, throwable ->
+                if (rudpSendContext != null) sentSmall = true
+                else throw throwable
             }
 
             rudp2.receiveBlocking()
             val receiveSmall = true
 
             var sentLarge = false
-            rudp2.send(ByteArray(1000000).toDirectByteBuffer(), net1Addr) {
-                sentLarge = true
+            rudp2.send(ByteArray(1000000).toDirectByteBuffer(), net1Addr).handle { rudpSendContext, throwable ->
+                if (rudpSendContext != null) sentLarge = true
+                else throw throwable
             }
 
             rudp1.receiveBlocking()
@@ -89,12 +91,14 @@ class RUDPSocketTest {
         val net2Content = ByteArray(20000) { it.toByte() }
 
         for (i in 0 until n) {
-            rudp1.send(net1Content.toDirectByteBuffer(), net2Addr) {
-                sent1++
+            rudp1.send(net1Content.toDirectByteBuffer(), net2Addr).handle { context, error ->
+                if (context != null) sent1++
+                else throw error
             }
 
-            rudp2.send(net2Content.toDirectByteBuffer(), net1Addr) {
-                sent2++
+            rudp2.send(net2Content.toDirectByteBuffer(), net1Addr).handle { context, error ->
+                if (context != null) sent2++
+                else throw error
             }
         }
 
@@ -152,12 +156,14 @@ class RUDPSocketTest {
             }
 
             for (i in 0 until n) {
-                rudp1.send(net1Content, net2Addr) {
-                    sent1++
+                rudp1.send(net1Content, net2Addr).handle { context, error ->
+                    if (context != null) sent1++
+                    else throw error
                 }
 
-                rudp2.send(net2Content.toDirectByteBuffer(), net1Addr) {
-                    sent2++
+                rudp2.send(net2Content.toDirectByteBuffer(), net1Addr).handle { context, error ->
+                    if (context != null) sent2++
+                    else throw error
                 }
 
                 launch(Dispatchers.IO) {

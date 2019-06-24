@@ -8,11 +8,11 @@
 // create a pair of sockets
 val rudp1 = RUDPSocket()
 val rudp2 = RUDPSocket()
-                    
+
 val net1Addr = InetSocketAddress(1337)
 val net2Addr = InetSocketAddress(1338)
 
-// bind to some address                                
+// bind to some address
 rudp1.bind(net1Addr)
 rudp2.bind(net2Addr)
 
@@ -20,8 +20,10 @@ rudp2.bind(net2Addr)
 var sent = 0
 
 val net1Content = ByteArray(20000) { it.toByte() }
-rudp1.send(net1Content, net2Addr) { sent++ } // non-blocking code, provides callbacks, adds data to send queue
-rudp1.send(net1Content, net2Addr) { sent++ } // send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
+// non-blocking code, adds data to send queue, returns future
+rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
+// send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
+rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
 
 var received = 0
 
@@ -29,10 +31,11 @@ var received = 0
 while (received < 2 && sent < 2) {
     rudp1.runOnce() // processes data if it available
     rudp2.runOnce()
-    
+
     // try to get data from receive queue
     val data = rudp2.receive()
-    if (data != null) received++ // if there is data - increment, if there is no - try again
+    if (data != null) // if there is data - increment, if there is no - try again
+        received++
 }
 
 println("Data transmitted")
@@ -109,34 +112,22 @@ fun isClosed(): Boolean
  *
  * @param data [ByteBuffer] - normalized (flipped) data
  * @param to [InetSocketAddress] - address to send data to
- * @param stop lambda returning [Boolean] - called on each processing loop iteration, if returns true - sending is
- *  canceled
- * @param complete lambda returning [Void] - called when send is completed successfully (if sending is canceled,
- *  this callback is not executed)
+ *
+ * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
+ *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
  */
-fun RUDPSocket.send(
-    data: ByteBuffer, 
-    to: InetSocketAddress, 
-    stop: ExitCallback = { false }, 
-    complete: CompleteCallback = {}
-)
+fun send(data: ByteBuffer, to: InetSocketAddress): CompletableFuture<RUDPSendContext> 
 
 /**
  * [RUDPSocket.send] but instead of [ByteBuffer] it sends [ByteArray]
  *
  * @param data [ByteArray] - input data
  * @param to [InetSocketAddress] - receiver
- * @param dataSizeBytes [Int] - if not specified [ByteArray.size] will be used
- * @param exit [ExitCallback]
- * @param complete [CompleteCallback]
+ *
+ * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
+ *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
  */
-fun RUDPSocket.send(
-    data: ByteArray,
-    to: InetSocketAddress,
-    dataSizeBytes: Int = 0,
-    exit: ExitCallback = { false },
-    complete: CompleteCallback = {}
-)
+fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): CompletableFuture<RUDPSendContext>
 
 /**
  * Tries to retrieve some data from receive queue.
