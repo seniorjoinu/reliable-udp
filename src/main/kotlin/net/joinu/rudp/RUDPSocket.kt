@@ -1,12 +1,13 @@
 package net.joinu.rudp
 
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.suspendCancellableCoroutine
 import mu.KotlinLogging
 import net.joinu.wirehair.Wirehair
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.*
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 
 
@@ -37,44 +38,39 @@ class RUDPSocket(
 
     /* --- High-level RUDP stuff --- */
 
-    val sendQueue = ConcurrentLinkedQueue<PacketAndFuture>()
-    val receiveQueue = ConcurrentLinkedQueue<QueuedDatagramPacket>()
+    val sendQueue = ConcurrentLinkedQueue<PacketAndContinuation>()
+    val receiveQueue = Channel<QueuedDatagramPacket>()
     val contextManager = RUDPContextManager()
     val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
 
     /**
-     * Adds data in processing queue for send.
+     * Adds data in processing queue for send. Suspends until data is certainly sent. Can be canceled.
      *
      * @param data [ByteBuffer] - normalized (flipped) data
      * @param to [InetSocketAddress] - address to send data to
      *
-     * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
-     *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
+     * @return [RUDPSendContext]
      */
-    fun send(data: ByteBuffer, to: InetSocketAddress): CompletableFuture<RUDPSendContext> {
-        val future = CompletableFuture<RUDPSendContext>()
-
-        sendQueue.add(Pair(QueuedDatagramPacket(data, to), future))
-
-        return future
+    suspend fun send(data: ByteBuffer, to: InetSocketAddress) = suspendCancellableCoroutine<RUDPSendContext> { cont ->
+        sendQueue.add(QueuedDatagramPacket(data, to) to cont)
     }
 
     /**
-     * Tries to retrieve some data from receive queue.
+     * Suspends until there is a packet to receive
      *
-     * @return [QueuedDatagramPacket] - if there is a data returns packet, otherwise - [null]
+     * @return [QueuedDatagramPacket]
      */
-    fun receive() = receiveQueue.poll()
+    suspend fun receive() = receiveQueue.receive()
 
     /**
-     * Runs processing loop once.
+     * Runs processing loop once. Suspends if nobody receives packets.
      *
      * Loop consists of three stages:
      *  1. Clean up
      *  2. Processing send
      *  3. Processing receive
      */
-    fun runOnce() {
+    suspend fun runOnce() {
         // clean up
         contextManager.cleanUpFinishedReceiveContexts(cleanUpTimeoutMs)
         contextManager.destroyAllForbiddenReceiveContexts(cleanUpTimeoutMs)
@@ -110,7 +106,7 @@ class RUDPSocket(
     }
 
     private fun prepareSend() {
-        val sendQueueCopy = mutableListOf<PacketAndFuture>()
+        val sendQueueCopy = mutableListOf<PacketAndContinuation>()
 
         while (true) {
             val packet = sendQueue.poll() ?: break
@@ -149,7 +145,10 @@ class RUDPSocket(
 
                     logger.trace { "Received ACK for threadId: ${ack.threadId}, stopping..." }
 
-                    context.future.complete(context)
+                    context.continuation.resume(context) {
+                        logger.warn { "Send for ${ack.threadId} was already canceled" }
+                    }
+
                     contextManager.destroySendContext(context.threadId)
 
                     null
@@ -175,7 +174,7 @@ class RUDPSocket(
         }
     }
 
-    private fun processReceive(blocks: List<Pair<RepairBlock, InetSocketAddress>>) {
+    private suspend fun processReceive(blocks: List<Pair<RepairBlock, InetSocketAddress>>) {
         blocks.forEach { (block, from) ->
             val threadId = block.threadId
 
@@ -198,7 +197,7 @@ class RUDPSocket(
 
             sendAck(threadId, from)
 
-            receiveQueue.add(QueuedDatagramPacket(message, from))
+            receiveQueue.send(QueuedDatagramPacket(message, from))
         }
     }
 

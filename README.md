@@ -16,29 +16,26 @@ val net2Addr = InetSocketAddress(1338)
 rudp1.bind(net1Addr)
 rudp2.bind(net2Addr)
 
-// send some content
-var sent = 0
-
 val net1Content = ByteArray(20000) { it.toByte() }
-// non-blocking code, adds data to send queue, returns future
-rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
-// send second time to show multiplexing, the logic inside is done in sequence, so it is absolutely save to increment asynchronously
-rudp1.send(net1Content, net2Addr).handle { context, error -> context!!; sent++ }
 
-var received = 0
+// running coroutines in some scope (as you might notice, it uses only one thread)
+runBlocking {
+    // start sockets
+    launch { rudp1.runSuspending() }
+    launch { rudp2.runSuspending() }
 
-// there is no blocking "listen" or "run" - you can block your threads in a way you like
-while (received < 2 && sent < 2) {
-    rudp1.runOnce() // processes data if it available
-    rudp2.runOnce()
+    // send-receive some stuff
+    coroutineScope {
+        launch { rudp1.send(net1Content, net2Addr) }
+        launch { rudp1.send(net1Content, net2Addr) }
+        launch { rudp2.receive() }
+        launch { rudp2.receive() }
+    } 
+    // <-- at this moment all send() and receive() are completed, thanks to the structured concurrency
 
-    // try to get data from receive queue
-    val data = rudp2.receive()
-    if (data != null) // if there is data - increment, if there is no - try again
-        received++
+    // stop sockets
+    coroutineContext.cancelChildren()
 }
-
-println("Data transmitted")
 
 // close sockets, free resources
 rudp1.close()
@@ -58,17 +55,7 @@ rudp2.close()
     in [kcp](https://github.com/skywind3000/kcp).
 5. RUDPSocket uses only one port to receive and send data.
 
-// TODO: add AWS benchmarks
-
-#### Algorithm in short words
-1. Sender adds data to the send queue `socket.send(data, address)`
-2. When `socket.runOnce()` is invoked
-    1. Source data is transformed into small portion of repair packets
-    2. Repair packets are written to DatagramSocket sequentially
-    3. If there are packets to read from DatagramSocket they are read
-    4. For each read repair packet it tries to restore source data
-    5. If data is restored completely, ACK packet sent back to sender and data is added to the receive queue
-3. Receiver tries to receive data from the receive queue `socket.receive()`
+// TODO: add AWS benchmark
 
 #### API Reference
 ```kotlin
@@ -108,15 +95,14 @@ fun close()
 fun isClosed(): Boolean
 
 /**
- * Adds data in processing queue for send.
+ * Adds data in processing queue for send. Suspends until data is certainly sent. Can be canceled.
  *
  * @param data [ByteBuffer] - normalized (flipped) data
  * @param to [InetSocketAddress] - address to send data to
  *
- * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
- *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
+ * @return [RUDPSendContext]
  */
-fun send(data: ByteBuffer, to: InetSocketAddress): CompletableFuture<RUDPSendContext> 
+suspend fun send(data: ByteBuffer, to: InetSocketAddress): RUDPSendContext
 
 /**
  * [RUDPSocket.send] but instead of [ByteBuffer] it sends [ByteArray]
@@ -124,46 +110,42 @@ fun send(data: ByteBuffer, to: InetSocketAddress): CompletableFuture<RUDPSendCon
  * @param data [ByteArray] - input data
  * @param to [InetSocketAddress] - receiver
  *
- * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
- *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
+ * @return [RUDPSendContext]
  */
-fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): CompletableFuture<RUDPSendContext>
+suspend fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): RUDPSendContext
 
 /**
- * Tries to retrieve some data from receive queue.
- *
- * @return [QueuedDatagramPacket] - if there is a data returns packet, otherwise - [null]
- */
-fun RUDPSocket.receive(): QueuedDatagramPacket?
-
-/**
- * Blocks current thread until it receives something from the socket.
- *
- * @param timeoutMs [Long] - if not specified runs forever
+ * Suspends until there is a packet to receive
  *
  * @return [QueuedDatagramPacket]
- * @throws [TimeoutException]
  */
-@Throws(TimeoutException::class)
-fun RUDPSocket.receiveBlocking(timeoutMs: Long = 0): QueuedDatagramPacket
+suspend fun receive(): QueuedDatagramPacket
 
 /**
- * Runs processing loop once.
+ * Executes [RUDPSocket.runOnce] in loop until coroutine is not canceled
+ */
+suspend fun RUDPSocket.runSuspending()
+
+/**
+ * Runs processing loop once. Suspends if nobody receives packets.
  *
  * Loop consists of three stages:
  *  1. Clean up
  *  2. Processing send
  *  3. Processing receive
  */
-fun runOnce()
-
-/**
- * Blocks current thread running [RUDPSocket]'s processing loop until [exit] condition is met.
- *
- * @param exit lambda () -> [Boolean] - when returns true processing loop completes (it still be run after)
- */
-fun RUDPSocket.runBlocking(exit: () -> Boolean = { false })
+suspend fun runOnce()
 ```
+
+#### Algorithm in short words
+1. Sender adds data to the send queue `socket.send(data, address)`
+2. When `socket.runOnce()` is invoked
+    1. Source data is transformed into small portion of repair packets
+    2. Repair packets are written to DatagramSocket sequentially
+    3. If there are packets to read from DatagramSocket they are read
+    4. For each read repair packet it tries to restore source data
+    5. If data is restored completely, ACK packet sent back to sender and data is added to the receive queue
+3. Receiver tries to receive data from the receive queue `socket.receive()`
 
 ### Installation
 Use [Jitpack](https://jitpack.io/)

@@ -1,19 +1,19 @@
 package net.joinu.rudp
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeoutException
+import kotlin.coroutines.coroutineContext
 
 
 /**
- * Blocks current thread running [RUDPSocket]'s processing loop until [exit] condition is met.
- *
- * @param exit lambda () -> [Boolean] - when returns true processing loop completes (it still be run after)
+ * Executes [RUDPSocket.runOnce] in loop until coroutine is not canceled
  */
-fun RUDPSocket.runBlocking(exit: () -> Boolean = { false }) {
-    while (!exit()) {
+suspend fun RUDPSocket.runSuspending() {
+    while (coroutineContext.isActive) {
         runOnce()
+        delay(1)
     }
 }
 
@@ -23,10 +23,9 @@ fun RUDPSocket.runBlocking(exit: () -> Boolean = { false }) {
  * @param data [ByteArray] - input data
  * @param to [InetSocketAddress] - receiver
  *
- * @return [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
- *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
+ * @return [RUDPSendContext]
  */
-fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): CompletableFuture<RUDPSendContext> {
+suspend fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): RUDPSendContext {
     val buffer = ByteBuffer.allocate(data.size)
 
     buffer.put(data)
@@ -35,25 +34,3 @@ fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): CompletableFuture<R
     return send(buffer, to)
 }
 
-/**
- * Blocks current thread until it receives something from the socket.
- *
- * @param timeoutMs [Long] - if not specified runs forever
- *
- * @return [QueuedDatagramPacket]
- * @throws [TimeoutException]
- */
-@Throws(TimeoutException::class)
-fun RUDPSocket.receiveBlocking(timeoutMs: Long = 0): QueuedDatagramPacket {
-    val start = System.currentTimeMillis()
-
-    while (true) {
-        val packet = receive()
-
-        if (packet != null)
-            return packet
-
-        if (timeoutMs > 0 && start + timeoutMs < System.currentTimeMillis())
-            throw TimeoutException("Unable to receive any packet")
-    }
-}

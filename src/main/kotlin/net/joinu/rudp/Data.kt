@@ -1,10 +1,10 @@
 package net.joinu.rudp
 
+import kotlinx.coroutines.CancellableContinuation
 import net.joinu.rudp.SocketState.*
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
-import java.util.concurrent.CompletableFuture
 
 /**
  * Socket is created in [UNBOUND] state.
@@ -156,4 +156,4 @@ const val FLOAT_SIZE_BYTES = 8
 const val UUID_SIZE_BYTES = 16
 
 data class QueuedDatagramPacket(val data: ByteBuffer, val address: InetSocketAddress)
-typealias PacketAndFuture = Pair<QueuedDatagramPacket, CompletableFuture<RUDPSendContext>>
+typealias PacketAndContinuation = Pair<QueuedDatagramPacket, CancellableContinuation<RUDPSendContext>>

@@ -1,11 +1,11 @@
 package net.joinu.rudp
 
+import kotlinx.coroutines.CancellableContinuation
 import net.joinu.wirehair.Wirehair
 import sun.nio.ch.DirectBuffer
 import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.CancellationException
-import java.util.concurrent.CompletableFuture
 
 
 /**
@@ -16,14 +16,14 @@ import java.util.concurrent.CompletableFuture
  * @param threadId [UUID] - each thread is represents the process of the transmission of some input data
  * @param packet [QueuedDatagramPacket] - the same as [java.net.DatagramPacket] but with [ByteBuffer] for data
  * @param repairBlockSizeBytes [Int] - how much bytes there are in repair block without it's metadata
- * @param future [CompletableFuture] of [RUDPSendContext] - future that completes when send succeeds,
+ * @param continuation [CancellableContinuation] of [RUDPSendContext] - continuation that completes when send succeeds,
  *  completes exceptionally when socket closed before send completes, and can be canceled (that will cancel sending)
  */
 abstract class RUDPSendContext(
     val threadId: UUID,
     val packet: QueuedDatagramPacket,
     val repairBlockSizeBytes: Int,
-    val future: CompletableFuture<RUDPSendContext>
+    val continuation: CancellableContinuation<RUDPSendContext>
 ) {
     var blockId: Int = 0
     var lastGetRepairBlocksTimestamp: Long = 0
@@ -45,8 +45,8 @@ class EncodingRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
     repairBlockSizeBytes: Int,
-    future: CompletableFuture<RUDPSendContext>
-) : RUDPSendContext(threadId, packet, repairBlockSizeBytes, future) {
+    cancellableContinuation: CancellableContinuation<RUDPSendContext>
+) : RUDPSendContext(threadId, packet, repairBlockSizeBytes, cancellableContinuation) {
 
     private val encoder: Wirehair.Encoder
 
@@ -102,8 +102,8 @@ class DummyRUDPSendContext(
     threadId: UUID,
     packet: QueuedDatagramPacket,
     repairBlockSizeBytes: Int,
-    future: CompletableFuture<RUDPSendContext>
-) : RUDPSendContext(threadId, packet, repairBlockSizeBytes, future) {
+    cancellableContinuation: CancellableContinuation<RUDPSendContext>
+) : RUDPSendContext(threadId, packet, repairBlockSizeBytes, cancellableContinuation) {
 
     override fun destroy() {}
 
@@ -196,13 +196,13 @@ class RUDPContextManager {
         threadId: UUID,
         packet: QueuedDatagramPacket,
         repairBlockSizeBytes: Int,
-        future: CompletableFuture<RUDPSendContext>
+        cancellableContinuation: CancellableContinuation<RUDPSendContext>
     ) =
         sendContexts.getOrPut(threadId) {
             if (packet.data.limit() > repairBlockSizeBytes)
-                EncodingRUDPSendContext(threadId, packet, repairBlockSizeBytes, future)
+                EncodingRUDPSendContext(threadId, packet, repairBlockSizeBytes, cancellableContinuation)
             else
-                DummyRUDPSendContext(threadId, packet, repairBlockSizeBytes, future)
+                DummyRUDPSendContext(threadId, packet, repairBlockSizeBytes, cancellableContinuation)
         }
 
     fun destroySendContext(threadId: UUID): RUDPSendContext? {
@@ -217,7 +217,7 @@ class RUDPContextManager {
     fun getAllSendContexts() = sendContexts.values
 
     fun destroyAllCanceledSendContexts() {
-        val ids = sendContexts.values.filter { it.future.isCancelled }.map { it.threadId }
+        val ids = sendContexts.values.filter { it.continuation.isCancelled }.map { it.threadId }
         ids.forEach { destroySendContext(it) }
     }
 
@@ -256,7 +256,7 @@ class RUDPContextManager {
         sendThreadIds.forEach {
             val context = destroySendContext(it) ?: return@forEach
 
-            context.future.completeExceptionally(CancellationException("Socket was closed before this future canceled"))
+            context.continuation.cancel(CancellationException("Socket was closed"))
         }
     }
 

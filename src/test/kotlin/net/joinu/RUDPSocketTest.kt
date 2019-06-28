@@ -2,12 +2,12 @@ package net.joinu
 
 import kotlinx.coroutines.*
 import net.joinu.rudp.RUDPSocket
-import net.joinu.rudp.receiveBlocking
-import net.joinu.rudp.runBlocking
-import net.joinu.rudp.send
+import net.joinu.rudp.runSuspending
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 
 class RUDPSocketTest {
@@ -15,54 +15,28 @@ class RUDPSocketTest {
         System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE")
     }
 
-    // this one is very slow, because of congestion control timeout
     @Test
     fun `different data sizes transmit well`() {
-        val rudp1 = RUDPSocket()
-        val rudp2 = RUDPSocket()
+        val rudp1 = RUDPSocket(congestionControlTimeoutMs = 10)
+        val rudp2 = RUDPSocket(congestionControlTimeoutMs = 10)
+
+        val net1Addr = InetSocketAddress(1337)
+        val net2Addr = InetSocketAddress(1338)
+
+        rudp1.bind(net1Addr)
+        rudp2.bind(net2Addr)
 
         runBlocking {
-            val net1Addr = InetSocketAddress(1337)
-            val net2Addr = InetSocketAddress(1338)
+            launch { rudp1.runSuspending() }
+            launch { rudp2.runSuspending() }
 
-            rudp1.bind(net1Addr)
-            rudp2.bind(net2Addr)
+            rudp1.send(ByteArray(100).toDirectByteBuffer(), net2Addr)
+            rudp2.receive()
 
-            val r1 = launch(Dispatchers.IO) {
-                rudp1.runBlocking { !isActive }
-            }
+            rudp2.send(ByteArray(1000000).toDirectByteBuffer(), net1Addr)
+            rudp1.receive()
 
-            val r2 = launch(Dispatchers.IO) {
-                rudp2.runBlocking { !isActive }
-            }
-
-            var sentSmall = false
-            rudp1.send(ByteArray(100).toDirectByteBuffer(), net2Addr).handle { rudpSendContext, throwable ->
-                if (rudpSendContext != null) sentSmall = true
-                else throw throwable
-            }
-
-            rudp2.receiveBlocking()
-            val receiveSmall = true
-
-            var sentLarge = false
-            rudp2.send(ByteArray(1000000).toDirectByteBuffer(), net1Addr).handle { rudpSendContext, throwable ->
-                if (rudpSendContext != null) sentLarge = true
-                else throw throwable
-            }
-
-            rudp1.receiveBlocking()
-            val receiveLarge = true
-
-            while (true) {
-                if (sentSmall && sentLarge && receiveSmall && receiveLarge) {
-                    r1.cancel()
-                    r2.cancel()
-                    break
-                }
-
-                delay(100)
-            }
+            coroutineContext.cancelChildren()
         }
 
         rudp1.close()
@@ -71,126 +45,53 @@ class RUDPSocketTest {
 
     @Test
     fun `multiple concurrent sends-receives work fine single-threaded`() {
-        val net1Addr = InetSocketAddress(1337)
-        val net2Addr = InetSocketAddress(1338)
-
-        val rudp1 = RUDPSocket()
-        rudp1.bind(net1Addr)
-
-        val rudp2 = RUDPSocket()
-        rudp2.bind(net2Addr)
-
-        val n = 100
-
-        var receive1 = 0
-        var sent1 = 0
-        var receive2 = 0
-        var sent2 = 0
-
-        val net1Content = ByteArray(20000) { it.toByte() }
-        val net2Content = ByteArray(20000) { it.toByte() }
-
-        for (i in 0 until n) {
-            rudp1.send(net1Content.toDirectByteBuffer(), net2Addr).handle { context, error ->
-                if (context != null) sent1++
-                else throw error
-            }
-
-            rudp2.send(net2Content.toDirectByteBuffer(), net1Addr).handle { context, error ->
-                if (context != null) sent2++
-                else throw error
-            }
-        }
-
-        while (true) {
-            if (sent1 == n && receive2 == n && sent2 == n && receive1 == n) {
-                rudp1.close()
-                rudp2.close()
-                break
-            }
-            rudp1.runOnce()
-            rudp2.runOnce()
-
-            val k = rudp2.receive()
-            if (k != null) {
-                receive2++
-                assert(k.data.toByteArray().contentEquals(net1Content)) { "Content is not the same" }
-            }
-
-            val k1 = rudp1.receive()
-            if (k1 != null) {
-                receive1++
-                assert(k1.data.toByteArray().contentEquals(net2Content)) { "Content is not the same" }
-            }
-        }
+        concurrentSendTest(100, 1024 * 10, 50)
     }
 
     @Test
     fun `multiple concurrent sends-receives work fine mutli-threaded`() {
-        val rudp1 = RUDPSocket()
-        val rudp2 = RUDPSocket()
+        concurrentSendTest(1000, 1024 * 10, 1000, Dispatchers.Default)
+    }
 
-        runBlocking {
-            val net1Addr = InetSocketAddress(1337)
-            val net2Addr = InetSocketAddress(1338)
+    private fun concurrentSendTest(
+        n: Int,
+        dataSize: Int,
+        cct: Long,
+        context: CoroutineContext = EmptyCoroutineContext
+    ) {
+        val net1Addr = InetSocketAddress(1337)
+        val net2Addr = InetSocketAddress(1338)
 
-            rudp1.bind(net1Addr)
-            rudp2.bind(net2Addr)
+        val rudp1 = RUDPSocket(congestionControlTimeoutMs = cct)
+        rudp1.bind(net1Addr)
 
-            val n = 50
+        val rudp2 = RUDPSocket(congestionControlTimeoutMs = cct)
+        rudp2.bind(net2Addr)
 
-            var receive1 = 0
-            var sent1 = 0
-            var receive2 = 0
-            var sent2 = 0
+        val net1Content = ByteArray(dataSize) { it.toByte() }
+        val net2Content = ByteArray(dataSize) { it.toByte() }
 
-            val net1Content = ByteArray(20000) { it.toByte() }
-            val net2Content = ByteArray(20000) { it.toByte() }
+        runBlocking(context) {
+            launch { rudp1.runSuspending() }
+            launch { rudp2.runSuspending() }
 
-            val r1 = launch(Dispatchers.IO) {
-                rudp1.runBlocking { !isActive }
-            }
-
-            val r2 = launch(Dispatchers.IO) {
-                rudp2.runBlocking { !isActive }
-            }
-
-            for (i in 0 until n) {
-                rudp1.send(net1Content, net2Addr).handle { context, error ->
-                    if (context != null) sent1++
-                    else throw error
-                }
-
-                rudp2.send(net2Content.toDirectByteBuffer(), net1Addr).handle { context, error ->
-                    if (context != null) sent2++
-                    else throw error
-                }
-
-                launch(Dispatchers.IO) {
-                    rudp1.receiveBlocking()
-                    receive1++
-                }
-
-                launch(Dispatchers.IO) {
-                    rudp2.receiveBlocking()
-                    receive2++
+            coroutineScope {
+                for (i in 0 until n) {
+                    launch { rudp1.send(net1Content.toDirectByteBuffer(), net2Addr) }
+                    launch { rudp2.send(net2Content.toDirectByteBuffer(), net1Addr) }
+                    launch {
+                        val k = rudp1.receive()
+                        assert(k.data.toByteArray().contentEquals(net1Content)) { "Content is not the same" }
+                    }
+                    launch {
+                        val k = rudp2.receive()
+                        assert(k.data.toByteArray().contentEquals(net2Content)) { "Content is not the same" }
+                    }
                 }
             }
 
-            while (true) {
-                if (sent1 == n && receive2 == n && sent2 == n && receive1 == n) {
-                    r1.cancel()
-                    r2.cancel()
-                    break
-                }
-
-                delay(100)
-                println("$sent1, $receive1, $sent2, $receive2")
-            }
+            coroutineContext.cancelChildren()
         }
-
-        rudp1.close()
-        rudp2.close()
     }
 }
 
