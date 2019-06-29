@@ -1,5 +1,6 @@
 package net.joinu
 
+import jdk.nashorn.internal.ir.annotations.Ignore
 import kotlinx.coroutines.*
 import net.joinu.rudp.RUDPSocket
 import net.joinu.rudp.runSuspending
@@ -17,16 +18,16 @@ class RUDPSocketTest {
 
     @Test
     fun `different data sizes transmit well`() {
-        val rudp1 = RUDPSocket(congestionControlTimeoutMs = 500)
-        val rudp2 = RUDPSocket(congestionControlTimeoutMs = 500)
+        val rudp1 = RUDPSocket(congestionControlTimeoutMs = 100)
+        val rudp2 = RUDPSocket(congestionControlTimeoutMs = 100)
 
-        val net1Addr = InetSocketAddress(1337)
-        val net2Addr = InetSocketAddress(1338)
+        val net1Addr = InetSocketAddress("localhost", 1337)
+        val net2Addr = InetSocketAddress("localhost", 1338)
 
         rudp1.bind(net1Addr)
         rudp2.bind(net2Addr)
 
-        runBlocking {
+        runBlocking(Dispatchers.Default) {
             launch { rudp1.runSuspending() }
             launch { rudp2.runSuspending() }
 
@@ -44,8 +45,9 @@ class RUDPSocketTest {
     }
 
     @Test
+    @Ignore
     fun `multiple concurrent sends-receives work fine single-threaded`() {
-        concurrentSendTest(100, 1024 * 10, 500)
+        concurrentSendTest(100, 1024 * 10, 100)
     }
 
     @Test
@@ -59,8 +61,8 @@ class RUDPSocketTest {
         cct: Long,
         context: CoroutineContext = EmptyCoroutineContext
     ) {
-        val net1Addr = InetSocketAddress(1337)
-        val net2Addr = InetSocketAddress(1338)
+        val net1Addr = InetSocketAddress("localhost", 1337)
+        val net2Addr = InetSocketAddress("localhost", 1338)
 
         val rudp1 = RUDPSocket(congestionControlTimeoutMs = cct)
         rudp1.bind(net1Addr)
@@ -92,18 +94,10 @@ class RUDPSocketTest {
 
             coroutineContext.cancelChildren()
         }
-    }
-}
 
-fun assertThrows(block: () -> Unit) {
-    var thrown = false
-    try {
-        block()
-    } catch (e: Throwable) {
-        thrown = true
+        rudp1.close()
+        rudp2.close()
     }
-
-    assert(thrown)
 }
 
 fun ByteArray.toDirectByteBuffer(): ByteBuffer {

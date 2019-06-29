@@ -1,5 +1,6 @@
 package net.joinu.rudp
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import mu.KotlinLogging
@@ -70,6 +71,7 @@ class RUDPSocket(
      *  2. Processing send
      *  3. Processing receive
      */
+    @ExperimentalCoroutinesApi
     suspend fun runOnce() {
         // clean up
         contextManager.cleanUpFinishedReceiveContexts(cleanUpTimeoutMs)
@@ -123,6 +125,7 @@ class RUDPSocket(
         }
     }
 
+    @ExperimentalCoroutinesApi
     private fun prepareReceive(): List<Pair<RepairBlock, InetSocketAddress>> {
         val packets = mutableListOf<QueuedDatagramPacket>()
         while (true) {
