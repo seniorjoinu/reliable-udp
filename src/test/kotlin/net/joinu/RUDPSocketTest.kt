@@ -17,8 +17,8 @@ class RUDPSocketTest {
 
     @Test
     fun `different data sizes transmit well`() {
-        val rudp1 = RUDPSocket(congestionControlTimeoutMs = 200)
-        val rudp2 = RUDPSocket(congestionControlTimeoutMs = 200)
+        val rudp1 = RUDPSocket(congestionControlTimeoutMs = 500)
+        val rudp2 = RUDPSocket(congestionControlTimeoutMs = 500)
 
         val net1Addr = InetSocketAddress(1337)
         val net2Addr = InetSocketAddress(1338)
@@ -45,7 +45,7 @@ class RUDPSocketTest {
 
     @Test
     fun `multiple concurrent sends-receives work fine single-threaded`() {
-        concurrentSendTest(100, 1024 * 10, 200)
+        concurrentSendTest(100, 1024 * 10, 500)
     }
 
     @Test
