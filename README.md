@@ -80,19 +80,19 @@ class RUDPSocket(
  *
  * @param on [InetSocketAddress] - address to bind
  */
-fun bind(on: InetSocketAddress)
+fun RUDPSocket.bind(on: InetSocketAddress)
 
 /**
  * Destroys all contexts and closes this socket - after this you should create another one to work with
  */
-fun close()
+fun RUDPSocket.close()
 
 /**
  * Is socket closed
  *
  * @return [Boolean]
  */
-fun isClosed(): Boolean
+fun RUDPSocket.isClosed(): Boolean
 
 /**
  * Adds data in processing queue for send. Suspends until data is certainly sent. Can be canceled.
@@ -102,7 +102,7 @@ fun isClosed(): Boolean
  *
  * @return [RUDPSendContext]
  */
-suspend fun send(data: ByteBuffer, to: InetSocketAddress): RUDPSendContext
+suspend fun RUDPSocket.send(data: ByteBuffer, to: InetSocketAddress): RUDPSendContext
 
 /**
  * [RUDPSocket.send] but instead of [ByteBuffer] it sends [ByteArray]
@@ -119,7 +119,7 @@ suspend fun RUDPSocket.send(data: ByteArray, to: InetSocketAddress): RUDPSendCon
  *
  * @return [QueuedDatagramPacket]
  */
-suspend fun receive(): QueuedDatagramPacket
+suspend fun RUDPSocket.receive(): QueuedDatagramPacket
 
 /**
  * Executes [RUDPSocket.runOnce] in loop until coroutine is not canceled
@@ -134,7 +134,7 @@ suspend fun RUDPSocket.runSuspending()
  *  2. Processing send
  *  3. Processing receive
  */
-suspend fun runOnce()
+suspend fun RUDPSocket.runOnce()
 ```
 
 #### Algorithm in short words
