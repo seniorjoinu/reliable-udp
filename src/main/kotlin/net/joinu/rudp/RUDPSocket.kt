@@ -38,10 +38,10 @@ class RUDPSocket(
 
     /* --- High-level RUDP stuff --- */
 
-    val sendQueue = ConcurrentLinkedQueue<PacketAndContinuation>()
-    val receiveQueue = Channel<QueuedDatagramPacket>()
-    val contextManager = RUDPContextManager()
-    val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
+    private val sendQueue = ConcurrentLinkedQueue<PacketAndContinuation>()
+    private val receiveQueue = Channel<QueuedDatagramPacket>()
+    private val contextManager = RUDPContextManager()
+    private val repairBlockSizeBytes = mtuBytes - RepairBlock.METADATA_SIZE_BYTES
 
     /**
      * Adds data in processing queue for send. Suspends until data is certainly sent. Can be canceled.

@@ -91,6 +91,7 @@ data class BlockAck(val threadId: UUID, val blockId: Int, val congestionIndex: F
  */
 data class RepairBlock(
     val data: ByteBuffer,
+    val padding: ByteArray,
     val actualBlockSizeBytes: Int,
     val threadId: UUID,
     val blockId: Int,
@@ -114,13 +115,20 @@ data class RepairBlock(
             val latencyMs = buffer.short
             val lossRate = buffer.float
             val congestionIndex = buffer.float
+
             val writeLen = buffer.int
             val data = ByteBuffer.allocateDirect(writeLen)
             data.put(buffer)
+
+            val paddingSize = buffer.int
+            val padding = ByteArray(paddingSize)
+            buffer.get(padding)
+
             data.flip()
 
             return RepairBlock(
                 data,
+                padding,
                 writeLen,
                 threadId,
                 blockId,
@@ -146,6 +154,8 @@ data class RepairBlock(
             .putFloat(congestionIndex)
             .putInt(actualBlockSizeBytes)
             .put(data)
+            .putInt(padding.size)
+            .put(padding)
 
         buffer.flip()
     }
